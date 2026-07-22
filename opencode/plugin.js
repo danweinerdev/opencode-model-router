@@ -10,6 +10,43 @@ export const MODELS = Object.freeze({
   local: "llama.cpp/qwen3-coder-next-q4",
 })
 
+export const MODEL_ROLES = Object.freeze([
+  "orchestrator",
+  "reasoner",
+  "extractor",
+  "bulk-researcher",
+  "bounded-editor",
+  "small-model",
+  "summary",
+  "compaction",
+  "title",
+])
+
+export const DEFAULT_MODEL_CONFIG = Object.freeze({
+  schema_version: 1,
+  profiles: {
+    orchestration: { model: MODELS.orchestrator, reasoning_effort: "high" },
+    reasoning: { model: MODELS.reasoner, reasoning_effort: "medium" },
+    extraction: { model: MODELS.extractor, reasoning_effort: "medium" },
+    bulk: {
+      model: MODELS.local,
+      startup_check: true,
+      fallback: { model: MODELS.extractor, reasoning_effort: "medium" },
+    },
+  },
+  roles: {
+    orchestrator: "orchestration",
+    reasoner: "reasoning",
+    extractor: "extraction",
+    "bulk-researcher": "bulk",
+    "bounded-editor": "bulk",
+    "small-model": "bulk",
+    summary: "bulk",
+    compaction: "bulk",
+    title: "bulk",
+  },
+})
+
 export const WORKERS = Object.freeze([
   "reasoner",
   "extractor",
@@ -19,7 +56,8 @@ export const WORKERS = Object.freeze([
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 const LOCAL_HEALTH_TIMEOUT_MS = 1000
-const REMOTE_WORKERS = new Set(["reasoner", "extractor"])
+const REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"])
+const DEFAULT_REMOTE_WORKERS = new Set(["reasoner", "extractor"])
 const SENSITIVE = [
   /(^|[\s/])\.env(?:\.|\s|$)/i,
   /(^|[\s/])(credentials?|secrets?)(?:[\s/.:]|$)/i,
@@ -42,10 +80,93 @@ async function prompt(name) {
   return readFile(join(ROOT, "agents", `${name}.md`), "utf8")
 }
 
-export async function localModelAvailable(config, fetchImpl = globalThis.fetch) {
-  const provider = config.provider?.["llama.cpp"]
+function object(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+}
+
+function rejectUnknown(value, allowed, context) {
+  const unknown = Object.keys(value).filter((key) => !allowed.includes(key))
+  if (unknown.length) throw new Error(`${context} has unknown field(s): ${unknown.join(", ")}`)
+}
+
+function validateProfile(profile, context, fallback = false) {
+  if (!object(profile)) throw new Error(`${context} must be an object`)
+  rejectUnknown(
+    profile,
+    fallback
+      ? ["model", "reasoning_effort", "variant"]
+      : ["model", "reasoning_effort", "variant", "startup_check", "fallback"],
+    context,
+  )
+  if (typeof profile.model !== "string" || !/^[^/\s]+\/[^/\s]+$/.test(profile.model)) {
+    throw new Error(`${context}.model must use provider/model format`)
+  }
+  if (profile.reasoning_effort !== undefined && !REASONING_EFFORTS.has(profile.reasoning_effort)) {
+    throw new Error(`${context}.reasoning_effort is invalid`)
+  }
+  if (profile.variant !== undefined && (typeof profile.variant !== "string" || !profile.variant)) {
+    throw new Error(`${context}.variant must be a non-empty string`)
+  }
+  if (profile.reasoning_effort !== undefined && profile.variant !== undefined) {
+    throw new Error(`${context} cannot set both reasoning_effort and variant`)
+  }
+  if (!fallback && profile.startup_check !== undefined && typeof profile.startup_check !== "boolean") {
+    throw new Error(`${context}.startup_check must be boolean`)
+  }
+  if (!fallback && profile.fallback !== undefined) {
+    validateProfile(profile.fallback, `${context}.fallback`, true)
+  }
+  if (!fallback && profile.startup_check === true && profile.fallback === undefined) {
+    throw new Error(`${context} enables startup_check without a fallback`)
+  }
+}
+
+export function validateModelConfig(value) {
+  if (!object(value)) throw new Error("model configuration must be an object")
+  rejectUnknown(value, ["schema_version", "profiles", "roles"], "model configuration")
+  if (value.schema_version !== 1) throw new Error("unsupported schema_version")
+  if (!object(value.profiles) || Object.keys(value.profiles).length === 0) {
+    throw new Error("profiles must be a non-empty object")
+  }
+  for (const [name, profile] of Object.entries(value.profiles)) {
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) throw new Error(`invalid profile name: ${name}`)
+    validateProfile(profile, `profiles.${name}`)
+  }
+  if (!object(value.roles)) throw new Error("roles must be an object")
+  rejectUnknown(value.roles, MODEL_ROLES, "roles")
+  for (const role of MODEL_ROLES) {
+    const profile = value.roles[role]
+    if (typeof profile !== "string" || !profile) throw new Error(`roles.${role} is required`)
+    if (!Object.hasOwn(value.profiles, profile)) {
+      throw new Error(`roles.${role} references missing profile ${profile}`)
+    }
+  }
+  return value
+}
+
+export async function loadModelConfig(worktree, readFileImpl = readFile) {
+  const path = join(worktree, ".agents", "models.json")
+  try {
+    const value = JSON.parse(await readFileImpl(path, "utf8"))
+    return { config: validateModelConfig(value), source: path }
+  } catch (error) {
+    if (error?.code === "ENOENT") return { config: DEFAULT_MODEL_CONFIG, source: "bundled" }
+    return {
+      config: DEFAULT_MODEL_CONFIG,
+      source: "bundled",
+      warning: `Ignored invalid ${path}: ${error instanceof Error ? error.message : String(error)}`,
+    }
+  }
+}
+
+export async function profileAvailable(config, profile, fetchImpl = globalThis.fetch) {
+  if (profile.startup_check !== true) return true
+  const separator = profile.model.indexOf("/")
+  const providerID = profile.model.slice(0, separator)
+  const modelID = profile.model.slice(separator + 1)
+  const provider = config.provider?.[providerID]
   const baseURL = provider?.options?.baseURL
-  const expected = provider?.models?.["qwen3-coder-next-q4"]?.id
+  const expected = provider?.models?.[modelID]?.id ?? modelID
   if (typeof baseURL !== "string" || typeof expected !== "string" || typeof fetchImpl !== "function") {
     return false
   }
@@ -72,18 +193,44 @@ export async function localModelAvailable(config, fetchImpl = globalThis.fetch) 
   }
 }
 
-export async function applyRoutingConfig(config, availability = localModelAvailable) {
+function profileFields(profile) {
+  return {
+    model: profile.model,
+    ...(profile.reasoning_effort ? { options: { reasoningEffort: profile.reasoning_effort } } : {}),
+    ...(profile.variant ? { variant: profile.variant } : {}),
+  }
+}
+
+function localModel(config, model) {
+  const providerID = model.slice(0, model.indexOf("/"))
+  const baseURL = config.provider?.[providerID]?.options?.baseURL
+  if (typeof baseURL !== "string") return false
+  try {
+    const hostname = new URL(baseURL).hostname
+    return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]"
+  } catch {
+    return false
+  }
+}
+
+export async function applyRoutingConfig(
+  config,
+  modelConfig = DEFAULT_MODEL_CONFIG,
+  availability = profileAvailable,
+) {
   const prompts = Object.fromEntries(
     await Promise.all(
       ["orchestrator", ...WORKERS].map(async (name) => [name, await prompt(name)]),
     ),
   )
-  const useLocal = await availability(config)
-  const bulkModel = useLocal ? MODELS.local : MODELS.extractor
-  const bulkOptions = useLocal ? undefined : { reasoningEffort: "medium" }
+  const profiles = Object.create(null)
+  for (const [name, profile] of Object.entries(modelConfig.profiles)) {
+    profiles[name] = (await availability(config, profile)) ? profile : profile.fallback
+  }
+  const role = (name) => profiles[modelConfig.roles[name]]
 
-  config.model = MODELS.orchestrator
-  config.small_model = bulkModel
+  config.model = role("orchestrator").model
+  config.small_model = role("small-model").model
   config.default_agent = "orchestrator"
   config.agent ??= {}
 
@@ -91,8 +238,7 @@ export async function applyRoutingConfig(config, availability = localModelAvaila
     orchestrator: {
       description: "Plans, tests, decides, verifies, and orchestrates model-tier workers.",
       mode: "primary",
-      model: MODELS.orchestrator,
-      options: { reasoningEffort: "high" },
+      ...profileFields(role("orchestrator")),
       prompt: prompts.orchestrator,
       permission: {
         task: {
@@ -107,8 +253,7 @@ export async function applyRoutingConfig(config, availability = localModelAvaila
     reasoner: {
       description: "Analyzes large inputs, diffs, failures, architecture, and subtle semantic interactions.",
       mode: "subagent",
-      model: MODELS.reasoner,
-      options: { reasoningEffort: "medium" },
+      ...profileFields(role("reasoner")),
       prompt: prompts.reasoner,
       permission: {
         "*": "deny",
@@ -127,8 +272,7 @@ export async function applyRoutingConfig(config, availability = localModelAvaila
     extractor: {
       description: "Extracts, searches, compares, and aggregates structured facts without making decisions.",
       mode: "subagent",
-      model: MODELS.extractor,
-      options: { reasoningEffort: "medium" },
+      ...profileFields(role("extractor")),
       prompt: prompts.extractor,
       permission: {
         "*": "deny",
@@ -141,8 +285,7 @@ export async function applyRoutingConfig(config, availability = localModelAvaila
     "bulk-researcher": {
       description: "Collects broad local or web evidence and returns concise source-linked summaries.",
       mode: "subagent",
-      model: bulkModel,
-      ...(bulkOptions ? { options: bulkOptions } : {}),
+      ...profileFields(role("bulk-researcher")),
       prompt: prompts["bulk-researcher"],
       permission: {
         "*": "deny",
@@ -157,8 +300,7 @@ export async function applyRoutingConfig(config, availability = localModelAvaila
     "bounded-editor": {
       description: "Makes simple edits limited to named files and runs explicitly requested verification.",
       mode: "subagent",
-      model: bulkModel,
-      ...(bulkOptions ? { options: bulkOptions } : {}),
+      ...profileFields(role("bounded-editor")),
       prompt: prompts["bounded-editor"],
       permission: {
         "*": "deny",
@@ -170,24 +312,26 @@ export async function applyRoutingConfig(config, availability = localModelAvaila
         bash: "ask",
       },
     },
-    summary: { model: bulkModel, ...(bulkOptions ? { options: bulkOptions } : {}) },
-    compaction: { model: bulkModel, ...(bulkOptions ? { options: bulkOptions } : {}) },
-    title: { model: bulkModel, ...(bulkOptions ? { options: bulkOptions } : {}) },
+    summary: profileFields(role("summary")),
+    compaction: profileFields(role("compaction")),
+    title: profileFields(role("title")),
   })
+  return {
+    remoteWorkers: new Set(WORKERS.filter((worker) => !localModel(config, role(worker).model))),
+  }
 }
 
-export function validateTask(args, env = process.env) {
-  if (env.OPENCODE_FRUGAL_ALLOW_UNROUTED === "1") return
-
+export function validateTask(args, env = process.env, remoteWorkers = DEFAULT_REMOTE_WORKERS) {
   const worker = args?.subagent_type
-  if (!WORKERS.includes(worker)) {
+  const configured = WORKERS.includes(worker)
+  if (!configured && env.OPENCODE_FRUGAL_ALLOW_UNROUTED !== "1") {
     throw new Error(
       `OpenCode Frugal blocked unconfigured subagent ${JSON.stringify(worker)}; use one of: ${WORKERS.join(", ")}`,
     )
   }
 
   const text = typeof args.prompt === "string" ? args.prompt : ""
-  if (REMOTE_WORKERS.has(worker) && SENSITIVE.some((pattern) => pattern.test(text))) {
+  if ((!configured || remoteWorkers.has(worker)) && SENSITIVE.some((pattern) => pattern.test(text))) {
     throw new Error(
       `OpenCode Frugal blocked sensitive-looking material from remote worker ${worker}; use a local worker or remove the sensitive input`,
     )
@@ -218,11 +362,17 @@ async function recordMetric(input, output) {
   await appendFile(path, `${JSON.stringify(record)}\n`, { mode: 0o600 })
 }
 
-export default async function opencodeFrugal() {
+export default async function opencodeFrugal(input) {
+  const models = await loadModelConfig(input.worktree)
+  let remoteWorkers = DEFAULT_REMOTE_WORKERS
   return {
-    config: applyRoutingConfig,
+    config: async (config) => {
+      const resolved = await applyRoutingConfig(config, models.config)
+      remoteWorkers = resolved.remoteWorkers
+    },
     "experimental.chat.system.transform": async (_input, output) => {
       output.system.push(ROUTING_POLICY)
+      if (models.warning) output.system.push(`OpenCode Frugal configuration warning: ${models.warning}`)
     },
     "tool.definition": async (input, output) => {
       if (input.toolID !== "task") return
@@ -230,7 +380,7 @@ export default async function opencodeFrugal() {
     },
     "tool.execute.before": async (input, output) => {
       if (input.tool !== "task") return
-      validateTask(output.args)
+      validateTask(output.args, process.env, remoteWorkers)
     },
     "tool.execute.after": async (input, output) => {
       if (input.tool !== "task") return

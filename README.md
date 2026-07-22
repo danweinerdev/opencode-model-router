@@ -39,6 +39,31 @@ a registered submodule under `~/.agents/plugins/`, then run:
 Restart OpenCode after activation. OpenCode loads configuration and plugins
 only at startup.
 
+## Project model profiles
+
+Each checkout can override only model selection through the gitignored file:
+
+```text
+$WORKTREE/.agents/models.json
+```
+
+Copy `examples/gpt-based.json.example` or
+`examples/claude-based.json.example` as a starting point. The document defines
+named profiles and maps every runtime role to one profile. Additional profiles
+may be retained as alternatives and selected by changing `roles`; unknown
+fields, missing roles, dangling profile names, and invalid model identifiers
+invalidate the complete override.
+
+Profiles accept `model` plus either `reasoning_effort` or `variant`, never both.
+Supported reasoning-effort values are `none`, `minimal`, `low`, `medium`,
+`high`, and `xhigh`. A profile can enable `startup_check` when it also supplies
+a complete `fallback`. Provider endpoints and credentials remain in trusted
+OpenCode configuration and cannot be overridden by this file.
+
+Precedence is project override followed by bundled defaults when the file is
+absent or invalid. Invalid overrides are ignored atomically and surfaced as an
+orchestrator system warning. Restart OpenCode after changing the file.
+
 ## Controls
 
 - Only the four configured worker agents may be launched through `task`.

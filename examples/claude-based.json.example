@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "profiles": {
+    "orchestration": {
+      "model": "anthropic/claude-fable-5",
+      "variant": "high"
+    },
+    "reasoning": {
+      "model": "anthropic/claude-sonnet-5",
+      "variant": "high"
+    },
+    "extraction": {
+      "model": "anthropic/claude-haiku-4-5"
+    },
+    "bulk": {
+      "model": "anthropic/claude-haiku-4-5"
+    },
+    "opus-4-6": {
+      "model": "anthropic/claude-opus-4-6",
+      "variant": "high"
+    },
+    "opus-4-7": {
+      "model": "anthropic/claude-opus-4-7",
+      "variant": "high"
+    },
+    "opus-4-8": {
+      "model": "anthropic/claude-opus-4-8",
+      "variant": "high"
+    },
+    "sonnet-4-6": {
+      "model": "anthropic/claude-sonnet-4-6",
+      "variant": "high"
+    }
+  },
+  "roles": {
+    "orchestrator": "orchestration",
+    "reasoner": "reasoning",
+    "extractor": "extraction",
+    "bulk-researcher": "bulk",
+    "bounded-editor": "bulk",
+    "small-model": "bulk",
+    "summary": "bulk",
+    "compaction": "bulk",
+    "title": "bulk"
+  }
+}
