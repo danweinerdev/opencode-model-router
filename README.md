@@ -4,6 +4,9 @@ Model-tier routing and guardrails for OpenCode.
 
 ## Roles
 
+The table below is the bundled default. Valid project or home profiles can
+replace these model assignments without changing agent permissions or prompts.
+
 | Agent | Model | Role |
 | --- | --- | --- |
 | `orchestrator` | `openai/gpt-5.6-sol` | Planning, testing, decisions, and final synthesis |
@@ -30,18 +33,30 @@ agent through this plugin.
 
 This repository is designed for the declarative plugin reconciler in
 `danweinerdev/opencode-env`. It does not ship or execute an installer. Add it as
-a registered submodule under `~/.agents/plugins/`, then run:
+a registered submodule under `$HOME/.agents/plugins/`, then run:
 
 ```sh
-~/.agents/refresh.sh
+"$HOME/.agents/refresh.sh"
 ```
 
 Restart OpenCode after activation. OpenCode loads configuration and plugins
 only at startup.
 
-## Project model profiles
+## Model profiles
 
-Each checkout can override only model selection through the gitignored file:
+Model routing can be configured globally or per checkout. Start a global
+GPT+Qwen profile with:
+
+```sh
+cp "$HOME/.agents/plugins/opencode-frugal/examples/gpt-based.json.example" \
+  "$HOME/.agents/models.json"
+```
+
+Use `claude-based.json.example` for the Anthropic-oriented profile. The
+`opencode-env` repository ignores its global `models.json`, so machine-specific
+model choices are not committed.
+
+Each checkout can override only model selection through its own file:
 
 ```text
 $WORKTREE/.agents/models.json
@@ -53,6 +68,9 @@ named profiles and maps every runtime role to one profile. Additional profiles
 may be retained as alternatives and selected by changing `roles`; unknown
 fields, missing roles, dangling profile names, and invalid model identifiers
 invalidate the complete override.
+
+Checkout-local files should also be ignored locally or by the project. The
+plugin reads them but does not modify repository ignore policy.
 
 Profiles accept `model` plus either `reasoning_effort` or `variant`, never both.
 Supported reasoning-effort values are `none`, `minimal`, `low`, `medium`,
