@@ -144,18 +144,33 @@ export function validateModelConfig(value) {
   return value
 }
 
-export async function loadModelConfig(worktree, readFileImpl = readFile) {
-  const path = join(worktree, ".agents", "models.json")
-  try {
-    const value = JSON.parse(await readFileImpl(path, "utf8"))
-    return { config: validateModelConfig(value), source: path }
-  } catch (error) {
-    if (error?.code === "ENOENT") return { config: DEFAULT_MODEL_CONFIG, source: "bundled" }
-    return {
-      config: DEFAULT_MODEL_CONFIG,
-      source: "bundled",
-      warning: `Ignored invalid ${path}: ${error instanceof Error ? error.message : String(error)}`,
+export async function loadModelConfig(worktree, options = {}) {
+  if (typeof options === "function") options = { readFileImpl: options }
+  const { home = homedir(), readFileImpl = readFile } = options
+  const candidates = [
+    join(worktree, ".agents", "models.json"),
+    join(home, ".agents", "models.json"),
+  ].filter((path, index, paths) => paths.indexOf(path) === index)
+  const warnings = []
+
+  for (const path of candidates) {
+    try {
+      const value = JSON.parse(await readFileImpl(path, "utf8"))
+      return {
+        config: validateModelConfig(value),
+        source: path,
+        ...(warnings.length ? { warning: warnings.join("; ") } : {}),
+      }
+    } catch (error) {
+      if (error?.code === "ENOENT") continue
+      warnings.push(`Ignored invalid ${path}: ${error instanceof Error ? error.message : String(error)}`)
     }
+  }
+
+  return {
+    config: DEFAULT_MODEL_CONFIG,
+    source: "bundled",
+    ...(warnings.length ? { warning: warnings.join("; ") } : {}),
   }
 }
 

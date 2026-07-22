@@ -181,16 +181,107 @@ test("checked-in examples conform to the project model schema", async () => {
 test("loads project configuration and falls back atomically when invalid", async () => {
   const project = structuredClone(DEFAULT_MODEL_CONFIG)
   project.profiles.extraction.reasoning_effort = "low"
-  const loaded = await loadModelConfig("/checkout", async (path) => {
-    assert.equal(path, "/checkout/.agents/models.json")
-    return JSON.stringify(project)
+  const loaded = await loadModelConfig("/checkout", {
+    home: "/home/user",
+    readFileImpl: async (path) => {
+      assert.equal(path, "/checkout/.agents/models.json")
+      return JSON.stringify(project)
+    },
   })
   assert.equal(loaded.config.profiles.extraction.reasoning_effort, "low")
   assert.equal(loaded.source, "/checkout/.agents/models.json")
 
-  const invalid = await loadModelConfig("/checkout", async () => "{}")
+  const invalid = await loadModelConfig("/checkout", {
+    home: "/home/user",
+    readFileImpl: async () => "{}",
+  })
   assert.equal(invalid.config, DEFAULT_MODEL_CONFIG)
   assert.match(invalid.warning, /unsupported schema_version/)
+})
+
+test("falls back from project to home model configuration", async () => {
+  const global = structuredClone(DEFAULT_MODEL_CONFIG)
+  global.profiles.extraction.reasoning_effort = "low"
+  const loaded = await loadModelConfig("/checkout", {
+    home: "/home/user",
+    readFileImpl: async (path) => {
+      if (path === "/checkout/.agents/models.json") {
+        const error = new Error("missing")
+        error.code = "ENOENT"
+        throw error
+      }
+      assert.equal(path, "/home/user/.agents/models.json")
+      return JSON.stringify(global)
+    },
+  })
+  assert.equal(loaded.source, "/home/user/.agents/models.json")
+  assert.equal(loaded.config.profiles.extraction.reasoning_effort, "low")
+  assert.equal(loaded.warning, undefined)
+})
+
+test("reports an invalid project file before using a valid home file", async () => {
+  const loaded = await loadModelConfig("/checkout", {
+    home: "/home/user",
+    readFileImpl: async (path) =>
+      path === "/checkout/.agents/models.json" ? "{}" : JSON.stringify(DEFAULT_MODEL_CONFIG),
+  })
+  assert.equal(loaded.source, "/home/user/.agents/models.json")
+  assert.match(loaded.warning, /Ignored invalid \/checkout\/\.agents\/models.json/)
+})
+
+test("preserves direct read-function injection", async () => {
+  const loaded = await loadModelConfig("/checkout", async (path) => {
+    assert.equal(path, "/checkout/.agents/models.json")
+    return JSON.stringify(DEFAULT_MODEL_CONFIG)
+  })
+  assert.equal(loaded.source, "/checkout/.agents/models.json")
+})
+
+test("uses bundled defaults when project and home files are missing", async () => {
+  const paths = []
+  const loaded = await loadModelConfig("/checkout", {
+    home: "/home/user",
+    readFileImpl: async (path) => {
+      paths.push(path)
+      const error = new Error("missing")
+      error.code = "ENOENT"
+      throw error
+    },
+  })
+  assert.deepEqual(paths, ["/checkout/.agents/models.json", "/home/user/.agents/models.json"])
+  assert.equal(loaded.config, DEFAULT_MODEL_CONFIG)
+  assert.equal(loaded.source, "bundled")
+  assert.equal(loaded.warning, undefined)
+})
+
+test("deduplicates identical project and home candidates", async () => {
+  let reads = 0
+  const loaded = await loadModelConfig("/home/user", {
+    home: "/home/user",
+    readFileImpl: async () => {
+      reads += 1
+      const error = new Error("missing")
+      error.code = "ENOENT"
+      throw error
+    },
+  })
+  assert.equal(reads, 1)
+  assert.equal(loaded.source, "bundled")
+})
+
+test("combines project and home validation warnings in precedence order", async () => {
+  const loaded = await loadModelConfig("/checkout", {
+    home: "/home/user",
+    readFileImpl: async (path) =>
+      path === "/checkout/.agents/models.json"
+        ? "{}"
+        : JSON.stringify({ schema_version: 1, profiles: {}, roles: {} }),
+  })
+  assert.equal(loaded.source, "bundled")
+  assert.match(
+    loaded.warning,
+    /^Ignored invalid \/checkout\/\.agents\/models\.json:.*; Ignored invalid \/home\/user\/\.agents\/models\.json:/,
+  )
 })
 
 test("task guard blocks unknown workers", () => {

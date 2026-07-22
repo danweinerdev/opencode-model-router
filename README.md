@@ -60,9 +60,17 @@ Supported reasoning-effort values are `none`, `minimal`, `low`, `medium`,
 a complete `fallback`. Provider endpoints and credentials remain in trusted
 OpenCode configuration and cannot be overridden by this file.
 
-Precedence is project override followed by bundled defaults when the file is
-absent or invalid. Invalid overrides are ignored atomically and surfaced as an
-orchestrator system warning. Restart OpenCode after changing the file.
+Resolution uses the first valid complete document in this order:
+
+```text
+$WORKTREE/.agents/models.json
+$HOME/.agents/models.json
+bundled defaults
+```
+
+Files are not merged. Missing files fall through silently; invalid files are
+ignored atomically, reported as orchestrator system warnings, and resolution
+continues at the next level. Restart OpenCode after changing either file.
 
 ## Controls
 
