@@ -7,7 +7,7 @@
     },
     "reasoning": {
       "model": "anthropic/claude-sonnet-5",
-      "variant": "high"
+      "variant": "medium"
     },
     "extraction": {
       "model": "anthropic/claude-haiku-4-5"
@@ -17,19 +17,19 @@
     },
     "opus-4-6": {
       "model": "anthropic/claude-opus-4-6",
-      "variant": "high"
+      "variant": "max"
     },
     "opus-4-7": {
       "model": "anthropic/claude-opus-4-7",
-      "variant": "high"
+      "variant": "xhigh"
     },
     "opus-4-8": {
       "model": "anthropic/claude-opus-4-8",
-      "variant": "high"
+      "variant": "max"
     },
     "sonnet-4-6": {
       "model": "anthropic/claude-sonnet-4-6",
-      "variant": "high"
+      "variant": "medium"
     }
   },
   "roles": {

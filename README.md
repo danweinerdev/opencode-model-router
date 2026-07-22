@@ -103,6 +103,12 @@ Supported reasoning-effort values are `none`, `minimal`, `low`, `medium`,
 a complete `fallback`. Provider endpoints and credentials remain in trusted
 OpenCode configuration and cannot be overridden by this file.
 
+Use `reasoning_effort` for OpenAI profiles and `variant` for Anthropic profiles.
+OpenCode's Claude variants map to native Anthropic effort plus adaptive thinking:
+Fable 5, Opus 4.7+, and Sonnet 5 support `low`, `medium`, `high`, `xhigh`, and
+`max`; Opus/Sonnet 4.6 omit `xhigh`. Haiku 4.5 has no native effort control, so
+the Claude example leaves its extraction and bulk profiles unset.
+
 Resolution uses the first valid complete document in this order:
 
 ```text

@@ -273,6 +273,23 @@ test("checked-in examples conform to the project model schema", async () => {
   }
 })
 
+test("Claude example assigns supported effort variants by role", async () => {
+  const models = validateModelConfig(
+    JSON.parse(await readFile("examples/claude-based.json.example", "utf8")),
+  )
+  const config = {}
+  await applyRoutingConfig(config, models)
+
+  assert.equal(config.agent.orchestrator.model, "anthropic/claude-fable-5")
+  assert.equal(config.agent.orchestrator.variant, "high")
+  assert.equal(config.agent.reasoner.model, "anthropic/claude-sonnet-5")
+  assert.equal(config.agent.reasoner.variant, "medium")
+  assert.equal(config.agent.extractor.model, "anthropic/claude-haiku-4-5")
+  assert.equal(config.agent.extractor.variant, undefined)
+  assert.equal(config.agent["review-blind-spots"].model, "anthropic/claude-opus-4-8")
+  assert.equal(config.agent["review-blind-spots"].variant, "max")
+})
+
 test("loads project configuration and falls back atomically when invalid", async () => {
   const project = structuredClone(DEFAULT_MODEL_CONFIG)
   project.profiles.extraction.reasoning_effort = "low"
