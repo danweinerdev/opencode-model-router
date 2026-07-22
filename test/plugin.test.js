@@ -18,8 +18,13 @@ test("configures exact models and default orchestrator", async () => {
   assert.equal(config.default_agent, "orchestrator")
   assert.equal(config.agent.reasoner.model, MODELS.reasoner)
   assert.equal(config.agent.extractor.model, MODELS.extractor)
+  assert.equal(config.agent.orchestrator.options.reasoningEffort, "high")
+  assert.equal(config.agent.reasoner.options.reasoningEffort, "medium")
+  assert.equal(config.agent.extractor.options.reasoningEffort, "medium")
   assert.equal(config.agent["bulk-researcher"].model, MODELS.local)
   assert.equal(config.agent["bounded-editor"].model, MODELS.local)
+  assert.equal(config.agent["bulk-researcher"].options, undefined)
+  assert.equal(config.agent["bounded-editor"].options, undefined)
   assert.deepEqual(config.provider, { local: {} })
 })
 

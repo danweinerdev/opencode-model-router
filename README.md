@@ -12,6 +12,10 @@ Model-tier routing and guardrails for OpenCode.
 | `bulk-researcher` | `llama.cpp/qwen3-coder-next-q4` | Broad local and web collection with first-pass summaries |
 | `bounded-editor` | `llama.cpp/qwen3-coder-next-q4` | Explicit, bounded edits and verification |
 
+OpenAI reasoning effort defaults are `high` for the orchestrator and `medium`
+for both the reasoner and extractor. The local Qwen agents intentionally set no
+provider reasoning options; llama-server owns their inference tuning.
+
 The research and editing roles are separate capability boundaries even though
 they use the same local model. External content never reaches an edit-capable
 agent through this plugin.

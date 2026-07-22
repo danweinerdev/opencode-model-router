@@ -58,6 +58,7 @@ export async function applyRoutingConfig(config) {
       description: "Plans, tests, decides, verifies, and orchestrates model-tier workers.",
       mode: "primary",
       model: MODELS.orchestrator,
+      options: { reasoningEffort: "high" },
       prompt: prompts.orchestrator,
       permission: {
         task: {
@@ -73,6 +74,7 @@ export async function applyRoutingConfig(config) {
       description: "Analyzes large inputs, diffs, failures, architecture, and subtle semantic interactions.",
       mode: "subagent",
       model: MODELS.reasoner,
+      options: { reasoningEffort: "medium" },
       prompt: prompts.reasoner,
       permission: {
         "*": "deny",
@@ -92,6 +94,7 @@ export async function applyRoutingConfig(config) {
       description: "Extracts, searches, compares, and aggregates structured facts without making decisions.",
       mode: "subagent",
       model: MODELS.extractor,
+      options: { reasoningEffort: "medium" },
       prompt: prompts.extractor,
       permission: {
         "*": "deny",
