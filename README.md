@@ -16,6 +16,12 @@ OpenAI reasoning effort defaults are `high` for the orchestrator and `medium`
 for both the reasoner and extractor. The local Qwen agents intentionally set no
 provider reasoning options; llama-server owns their inference tuning.
 
+At startup, the plugin requests the configured llama-server `/models` endpoint
+and requires it to advertise `qwen3-coder-next`. If the endpoint is unavailable
+or the model is absent, both Qwen roles and OpenCode's small/hidden agents use
+Luna Fast with medium reasoning effort for that OpenCode process. Availability
+is checked only at startup; restart OpenCode to re-evaluate it.
+
 The research and editing roles are separate capability boundaries even though
 they use the same local model. External content never reaches an edit-capable
 agent through this plugin.

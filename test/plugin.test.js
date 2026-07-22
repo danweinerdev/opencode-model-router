@@ -6,12 +6,13 @@ import {
   WORKERS,
   applyRoutingConfig,
   hasResultFooter,
+  localModelAvailable,
   validateTask,
 } from "../opencode/plugin.js"
 
 test("configures exact models and default orchestrator", async () => {
   const config = { provider: { local: {} } }
-  await applyRoutingConfig(config)
+  await applyRoutingConfig(config, async () => true)
 
   assert.equal(config.model, MODELS.orchestrator)
   assert.equal(config.small_model, MODELS.local)
@@ -30,11 +31,66 @@ test("configures exact models and default orchestrator", async () => {
 
 test("orchestrator can launch only configured workers", async () => {
   const config = {}
-  await applyRoutingConfig(config)
+  await applyRoutingConfig(config, async () => true)
   const rules = config.agent.orchestrator.permission.task
 
   assert.equal(rules["*"], "deny")
   for (const worker of WORKERS) assert.equal(rules[worker], "allow")
+})
+
+test("detects the expected local model", async () => {
+  const config = {
+    provider: {
+      "llama.cpp": {
+        options: { baseURL: "http://127.0.0.1:8080/v1/" },
+        models: { "qwen3-coder-next-q4": { id: "qwen3-coder-next" } },
+      },
+    },
+  }
+  const fetchImpl = async (url, options) => {
+    assert.equal(url, "http://127.0.0.1:8080/v1/models")
+    assert.ok(options.signal)
+    return {
+      ok: true,
+      json: async () => ({ data: [{ id: "qwen3-coder-next" }] }),
+    }
+  }
+  assert.equal(await localModelAvailable(config, fetchImpl), true)
+})
+
+test("treats unavailable or unexpected local models as unhealthy", async () => {
+  const config = {
+    provider: {
+      "llama.cpp": {
+        options: { baseURL: "http://127.0.0.1:8080/v1" },
+        models: { "qwen3-coder-next-q4": { id: "qwen3-coder-next" } },
+      },
+    },
+  }
+  assert.equal(
+    await localModelAvailable(config, async () => ({
+      ok: true,
+      json: async () => ({ data: [{ id: "another-model" }] }),
+    })),
+    false,
+  )
+  assert.equal(
+    await localModelAvailable(config, async () => {
+      throw new Error("connection refused")
+    }),
+    false,
+  )
+})
+
+test("falls back Qwen roles and hidden agents to Luna medium", async () => {
+  const config = {}
+  await applyRoutingConfig(config, async () => false)
+
+  assert.equal(config.small_model, MODELS.extractor)
+  for (const name of ["bulk-researcher", "bounded-editor", "summary", "compaction", "title"]) {
+    assert.equal(config.agent[name].model, MODELS.extractor)
+    assert.equal(config.agent[name].options.reasoningEffort, "medium")
+  }
 })
 
 test("task guard blocks unknown workers", () => {

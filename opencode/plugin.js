@@ -18,6 +18,7 @@ export const WORKERS = Object.freeze([
 ])
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
+const LOCAL_HEALTH_TIMEOUT_MS = 1000
 const REMOTE_WORKERS = new Set(["reasoner", "extractor"])
 const SENSITIVE = [
   /(^|[\s/])\.env(?:\.|\s|$)/i,
@@ -41,15 +42,48 @@ async function prompt(name) {
   return readFile(join(ROOT, "agents", `${name}.md`), "utf8")
 }
 
-export async function applyRoutingConfig(config) {
+export async function localModelAvailable(config, fetchImpl = globalThis.fetch) {
+  const provider = config.provider?.["llama.cpp"]
+  const baseURL = provider?.options?.baseURL
+  const expected = provider?.models?.["qwen3-coder-next-q4"]?.id
+  if (typeof baseURL !== "string" || typeof expected !== "string" || typeof fetchImpl !== "function") {
+    return false
+  }
+
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), LOCAL_HEALTH_TIMEOUT_MS)
+  try {
+    const response = await fetchImpl(`${baseURL.replace(/\/$/, "")}/models`, {
+      signal: controller.signal,
+    })
+    if (!response.ok) return false
+    const body = await response.json()
+    const ids = [
+      ...(Array.isArray(body?.data) ? body.data.map((model) => model?.id) : []),
+      ...(Array.isArray(body?.models)
+        ? body.models.flatMap((model) => [model?.id, model?.model, model?.name])
+        : []),
+    ]
+    return ids.includes(expected)
+  } catch {
+    return false
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+export async function applyRoutingConfig(config, availability = localModelAvailable) {
   const prompts = Object.fromEntries(
     await Promise.all(
       ["orchestrator", ...WORKERS].map(async (name) => [name, await prompt(name)]),
     ),
   )
+  const useLocal = await availability(config)
+  const bulkModel = useLocal ? MODELS.local : MODELS.extractor
+  const bulkOptions = useLocal ? undefined : { reasoningEffort: "medium" }
 
   config.model = MODELS.orchestrator
-  config.small_model = MODELS.local
+  config.small_model = bulkModel
   config.default_agent = "orchestrator"
   config.agent ??= {}
 
@@ -107,7 +141,8 @@ export async function applyRoutingConfig(config) {
     "bulk-researcher": {
       description: "Collects broad local or web evidence and returns concise source-linked summaries.",
       mode: "subagent",
-      model: MODELS.local,
+      model: bulkModel,
+      ...(bulkOptions ? { options: bulkOptions } : {}),
       prompt: prompts["bulk-researcher"],
       permission: {
         "*": "deny",
@@ -122,7 +157,8 @@ export async function applyRoutingConfig(config) {
     "bounded-editor": {
       description: "Makes simple edits limited to named files and runs explicitly requested verification.",
       mode: "subagent",
-      model: MODELS.local,
+      model: bulkModel,
+      ...(bulkOptions ? { options: bulkOptions } : {}),
       prompt: prompts["bounded-editor"],
       permission: {
         "*": "deny",
@@ -134,9 +170,9 @@ export async function applyRoutingConfig(config) {
         bash: "ask",
       },
     },
-    summary: { model: MODELS.local },
-    compaction: { model: MODELS.local },
-    title: { model: MODELS.local },
+    summary: { model: bulkModel, ...(bulkOptions ? { options: bulkOptions } : {}) },
+    compaction: { model: bulkModel, ...(bulkOptions ? { options: bulkOptions } : {}) },
+    title: { model: bulkModel, ...(bulkOptions ? { options: bulkOptions } : {}) },
   })
 }
 
