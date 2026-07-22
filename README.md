@@ -29,6 +29,29 @@ The research and editing roles are separate capability boundaries even though
 they use the same local model. External content never reaches an edit-capable
 agent through this plugin.
 
+### SDD code-review lanes
+
+The `sdd-code-review` skill emits four stable runtime-neutral dispatch
+identifiers. OpenCode Frugal rewrites those task descriptions to fresh-context,
+read-only lane agents:
+
+| Dispatch identifier | Agent role | Bundled/GPT profile |
+| --- | --- | --- |
+| `review_plan_drift` | `review-plan-drift` | `reasoning` |
+| `review_quality` | `review-quality` | `reasoning` |
+| `review_spec_compliance` | `review-spec-compliance` | `extraction` |
+| `review_blind_spots` | `review-blind-spots` | `orchestration` |
+
+The Claude example maps the blind-spots lane to its `opus-4-8` profile while
+Fable 5 remains the primary orchestrator. Lane routing is deterministic: a
+recognized dispatch identifier replaces the caller's requested subagent type
+before permission and sensitive-data checks run.
+
+Lane input isolation is cooperative, matching SDD Planner's contract; it is not
+a filesystem sandbox. Agent permissions prevent edits and most shell commands,
+while the supplied lane prompt defines which planning, specification, and code
+inputs the reviewer may consult.
+
 ## Installation
 
 This repository is designed for the declarative plugin reconciler in
@@ -64,10 +87,12 @@ $WORKTREE/.agents/models.json
 
 Copy `examples/gpt-based.json.example` or
 `examples/claude-based.json.example` as a starting point. The document defines
-named profiles and maps every runtime role to one profile. Additional profiles
-may be retained as alternatives and selected by changing `roles`; unknown
-fields, missing roles, dangling profile names, and invalid model identifiers
-invalidate the complete override.
+named profiles and maps every core runtime role to one profile. Review-lane
+roles are optional for backward compatibility; omitted lanes inherit the
+`reasoner`, `extractor`, or `orchestrator` role documented above. Additional
+profiles may be retained as alternatives and selected by changing `roles`;
+unknown fields, missing core roles, dangling profile names, and invalid model
+identifiers invalidate the complete override.
 
 Checkout-local files should also be ignored locally or by the project. The
 plugin reads them but does not modify repository ignore policy.
@@ -92,7 +117,8 @@ continues at the next level. Restart OpenCode after changing either file.
 
 ## Controls
 
-- Only the four configured worker agents may be launched through `task`.
+- Only configured general workers and code-review lane workers may be launched
+  through `task`.
 - Remote workers reject task prompts containing obvious secret-bearing paths
   or private-key material. This is a guardrail, not content classification.
 - Worker responses must include the `<frugal_result ...>` footer documented in

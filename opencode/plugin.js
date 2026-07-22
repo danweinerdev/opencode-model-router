@@ -10,7 +10,7 @@ export const MODELS = Object.freeze({
   local: "llama.cpp/qwen3-coder-next-q4",
 })
 
-export const MODEL_ROLES = Object.freeze([
+export const CORE_MODEL_ROLES = Object.freeze([
   "orchestrator",
   "reasoner",
   "extractor",
@@ -21,6 +21,16 @@ export const MODEL_ROLES = Object.freeze([
   "compaction",
   "title",
 ])
+
+export const REVIEW_LANE_DISPATCH = Object.freeze({
+  review_plan_drift: "review-plan-drift",
+  review_quality: "review-quality",
+  review_spec_compliance: "review-spec-compliance",
+  review_blind_spots: "review-blind-spots",
+})
+
+export const REVIEW_LANE_ROLES = Object.freeze(Object.values(REVIEW_LANE_DISPATCH))
+export const MODEL_ROLES = Object.freeze([...CORE_MODEL_ROLES, ...REVIEW_LANE_ROLES])
 
 export const DEFAULT_MODEL_CONFIG = Object.freeze({
   schema_version: 1,
@@ -44,6 +54,10 @@ export const DEFAULT_MODEL_CONFIG = Object.freeze({
     summary: "bulk",
     compaction: "bulk",
     title: "bulk",
+    "review-plan-drift": "reasoning",
+    "review-quality": "reasoning",
+    "review-spec-compliance": "extraction",
+    "review-blind-spots": "orchestration",
   },
 })
 
@@ -52,7 +66,22 @@ export const WORKERS = Object.freeze([
   "extractor",
   "bulk-researcher",
   "bounded-editor",
+  ...REVIEW_LANE_ROLES,
 ])
+
+const REVIEW_LANE_BASE_ROLES = Object.freeze({
+  "review-plan-drift": "reasoner",
+  "review-quality": "reasoner",
+  "review-spec-compliance": "extractor",
+  "review-blind-spots": "orchestrator",
+})
+
+const REVIEW_LANE_DESCRIPTIONS = Object.freeze({
+  "review-plan-drift": "Reviews a diff against the active plan and prior execution record.",
+  "review-quality": "Reviews a diff and code for correctness, safety, and maintainability without intent context.",
+  "review-spec-compliance": "Reviews a diff against governing specifications and designs.",
+  "review-blind-spots": "Adversarially reviews a diff for edge cases, production failures, security, and concurrency.",
+})
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 const LOCAL_HEALTH_TIMEOUT_MS = 1000
@@ -134,9 +163,17 @@ export function validateModelConfig(value) {
   }
   if (!object(value.roles)) throw new Error("roles must be an object")
   rejectUnknown(value.roles, MODEL_ROLES, "roles")
-  for (const role of MODEL_ROLES) {
+  for (const role of CORE_MODEL_ROLES) {
     const profile = value.roles[role]
     if (typeof profile !== "string" || !profile) throw new Error(`roles.${role} is required`)
+    if (!Object.hasOwn(value.profiles, profile)) {
+      throw new Error(`roles.${role} references missing profile ${profile}`)
+    }
+  }
+  for (const role of REVIEW_LANE_ROLES) {
+    if (!Object.hasOwn(value.roles, role)) continue
+    const profile = value.roles[role]
+    if (typeof profile !== "string" || !profile) throw new Error(`roles.${role} must name a profile`)
     if (!Object.hasOwn(value.profiles, profile)) {
       throw new Error(`roles.${role} references missing profile ${profile}`)
     }
@@ -235,14 +272,19 @@ export async function applyRoutingConfig(
 ) {
   const prompts = Object.fromEntries(
     await Promise.all(
-      ["orchestrator", ...WORKERS].map(async (name) => [name, await prompt(name)]),
+      ["orchestrator", "reasoner", "extractor", "bulk-researcher", "bounded-editor", "reviewer"].map(
+        async (name) => [name, await prompt(name)],
+      ),
     ),
   )
   const profiles = Object.create(null)
   for (const [name, profile] of Object.entries(modelConfig.profiles)) {
     profiles[name] = (await availability(config, profile)) ? profile : profile.fallback
   }
-  const role = (name) => profiles[modelConfig.roles[name]]
+  const role = (name) => {
+    const profile = modelConfig.roles[name] ?? modelConfig.roles[REVIEW_LANE_BASE_ROLES[name]]
+    return profiles[profile]
+  }
 
   config.model = role("orchestrator").model
   config.small_model = role("small-model").model
@@ -258,10 +300,7 @@ export async function applyRoutingConfig(
       permission: {
         task: {
           "*": "deny",
-          reasoner: "allow",
-          extractor: "allow",
-          "bulk-researcher": "allow",
-          "bounded-editor": "allow",
+          ...Object.fromEntries(WORKERS.map((worker) => [worker, "allow"])),
         },
       },
     },
@@ -331,9 +370,37 @@ export async function applyRoutingConfig(
     compaction: profileFields(role("compaction")),
     title: profileFields(role("title")),
   })
+  for (const worker of REVIEW_LANE_ROLES) {
+    config.agent[worker] = {
+      description: REVIEW_LANE_DESCRIPTIONS[worker],
+      mode: "subagent",
+      ...profileFields(role(worker)),
+      prompt: prompts.reviewer,
+      permission: {
+        "*": "deny",
+        read: "allow",
+        glob: "allow",
+        grep: "allow",
+        list: "allow",
+        bash: {
+          "*": "deny",
+          "git diff*": "allow",
+          "git show*": "allow",
+          "git status*": "allow",
+          "git log*": "allow",
+        },
+      },
+    }
+  }
   return {
     remoteWorkers: new Set(WORKERS.filter((worker) => !localModel(config, role(worker).model))),
   }
+}
+
+export function routeTask(args) {
+  const worker = REVIEW_LANE_DISPATCH[args?.description]
+  if (worker) args.subagent_type = worker
+  return worker
 }
 
 export function validateTask(args, env = process.env, remoteWorkers = DEFAULT_REMOTE_WORKERS) {
@@ -377,9 +444,8 @@ async function recordMetric(input, output) {
   await appendFile(path, `${JSON.stringify(record)}\n`, { mode: 0o600 })
 }
 
-export default async function opencodeFrugal(input) {
-  const models = await loadModelConfig(input.worktree)
-  let remoteWorkers = DEFAULT_REMOTE_WORKERS
+export function hooksForModels(models) {
+  let remoteWorkers = new Set(WORKERS)
   return {
     config: async (config) => {
       const resolved = await applyRoutingConfig(config, models.config)
@@ -395,6 +461,7 @@ export default async function opencodeFrugal(input) {
     },
     "tool.execute.before": async (input, output) => {
       if (input.tool !== "task") return
+      routeTask(output.args)
       validateTask(output.args, process.env, remoteWorkers)
     },
     "tool.execute.after": async (input, output) => {
@@ -406,4 +473,8 @@ export default async function opencodeFrugal(input) {
       await recordMetric(input, output).catch(() => {})
     },
   }
+}
+
+export default async function opencodeFrugal(input) {
+  return hooksForModels(await loadModelConfig(input.worktree))
 }

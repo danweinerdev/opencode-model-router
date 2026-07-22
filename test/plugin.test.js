@@ -8,8 +8,10 @@ import {
   WORKERS,
   applyRoutingConfig,
   hasResultFooter,
+  hooksForModels,
   loadModelConfig,
   profileAvailable,
+  routeTask,
   validateModelConfig,
   validateTask,
 } from "../opencode/plugin.js"
@@ -40,6 +42,43 @@ test("orchestrator can launch only configured workers", async () => {
 
   assert.equal(rules["*"], "deny")
   for (const worker of WORKERS) assert.equal(rules[worker], "allow")
+})
+
+test("registers code-review lanes with profile-specific models", async () => {
+  const config = {}
+  await applyRoutingConfig(config, DEFAULT_MODEL_CONFIG, async () => true)
+
+  assert.equal(config.agent["review-plan-drift"].model, MODELS.reasoner)
+  assert.equal(config.agent["review-quality"].model, MODELS.reasoner)
+  assert.equal(config.agent["review-spec-compliance"].model, MODELS.extractor)
+  assert.equal(config.agent["review-blind-spots"].model, MODELS.orchestrator)
+  for (const name of [
+    "review-plan-drift",
+    "review-quality",
+    "review-spec-compliance",
+    "review-blind-spots",
+  ]) {
+    assert.equal(config.agent[name].mode, "subagent")
+    assert.equal(config.agent[name].permission["*"], "deny")
+    assert.equal(config.agent[name].permission.read, "allow")
+  }
+})
+
+test("routes stable SDD review identifiers regardless of requested worker", () => {
+  const lanes = {
+    review_plan_drift: "review-plan-drift",
+    review_quality: "review-quality",
+    review_spec_compliance: "review-spec-compliance",
+    review_blind_spots: "review-blind-spots",
+  }
+  for (const [description, expected] of Object.entries(lanes)) {
+    const args = { description, subagent_type: "general" }
+    assert.equal(routeTask(args), expected)
+    assert.equal(args.subagent_type, expected)
+  }
+  const unrelated = { description: "ordinary research", subagent_type: "bulk-researcher" }
+  assert.equal(routeTask(unrelated), undefined)
+  assert.equal(unrelated.subagent_type, "bulk-researcher")
 })
 
 test("detects the expected local model", async () => {
@@ -137,6 +176,62 @@ test("rejects incomplete, dangling, and ambiguous model configuration", () => {
   const ambiguous = structuredClone(DEFAULT_MODEL_CONFIG)
   ambiguous.profiles.reasoning.variant = "high"
   assert.throws(() => validateModelConfig(ambiguous), /cannot set both/)
+
+  const invalidLane = structuredClone(DEFAULT_MODEL_CONFIG)
+  invalidLane.roles["review-quality"] = "missing"
+  assert.throws(() => validateModelConfig(invalidLane), /references missing profile/)
+
+  const nonStringLane = structuredClone(DEFAULT_MODEL_CONFIG)
+  nonStringLane.roles["review-quality"] = 42
+  assert.throws(() => validateModelConfig(nonStringLane), /must name a profile/)
+})
+
+test("legacy profiles inherit code-review lane mappings", async () => {
+  const legacy = structuredClone(DEFAULT_MODEL_CONFIG)
+  for (const role of [
+    "review-plan-drift",
+    "review-quality",
+    "review-spec-compliance",
+    "review-blind-spots",
+  ]) {
+    delete legacy.roles[role]
+  }
+  validateModelConfig(legacy)
+  const config = {}
+  await applyRoutingConfig(config, legacy, async () => true)
+  assert.equal(config.agent["review-plan-drift"].model, MODELS.reasoner)
+  assert.equal(config.agent["review-spec-compliance"].model, MODELS.extractor)
+  assert.equal(config.agent["review-blind-spots"].model, MODELS.orchestrator)
+})
+
+test("plugin hook routes review lanes before enforcing the allowlist", async () => {
+  const hooks = hooksForModels({ config: DEFAULT_MODEL_CONFIG, source: "test" })
+  const config = {}
+  await hooks.config(config)
+  const output = {
+    args: {
+      description: "review_blind_spots",
+      subagent_type: "general",
+      prompt: "Review the supplied diff only",
+    },
+  }
+  await hooks["tool.execute.before"]({ tool: "task" }, output)
+  assert.equal(output.args.subagent_type, "review-blind-spots")
+})
+
+test("pre-config hook state treats every worker as remote", async () => {
+  const hooks = hooksForModels({ config: DEFAULT_MODEL_CONFIG, source: "test" })
+  const output = {
+    args: {
+      description: "review_quality",
+      subagent_type: "bulk-researcher",
+      prompt: "Read .env.production",
+    },
+  }
+  await assert.rejects(
+    hooks["tool.execute.before"]({ tool: "task" }, output),
+    /sensitive-looking material/,
+  )
 })
 
 test("keeps sensitive material off workers resolved to remote models", async () => {

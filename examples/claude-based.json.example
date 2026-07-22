@@ -41,6 +41,10 @@
     "small-model": "bulk",
     "summary": "bulk",
     "compaction": "bulk",
-    "title": "bulk"
+    "title": "bulk",
+    "review-plan-drift": "reasoning",
+    "review-quality": "reasoning",
+    "review-spec-compliance": "extraction",
+    "review-blind-spots": "opus-4-8"
   }
 }
