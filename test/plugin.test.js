@@ -407,14 +407,14 @@ test("task guard supports explicit recovery bypass", () => {
   assert.doesNotThrow(() =>
     validateTask(
       { subagent_type: "general", prompt: "work" },
-      { OPENCODE_FRUGAL_ALLOW_UNROUTED: "1" },
+      { OPENCODE_MODEL_ROUTER_ALLOW_UNROUTED: "1" },
     ),
   )
   assert.throws(
     () =>
       validateTask(
         { subagent_type: "general", prompt: "read .env.production" },
-        { OPENCODE_FRUGAL_ALLOW_UNROUTED: "1" },
+        { OPENCODE_MODEL_ROUTER_ALLOW_UNROUTED: "1" },
       ),
     /sensitive-looking material/,
   )

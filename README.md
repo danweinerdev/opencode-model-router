@@ -1,4 +1,4 @@
-# opencode-frugal
+# opencode-model-router
 
 Model-tier routing and guardrails for OpenCode.
 
@@ -32,7 +32,7 @@ agent through this plugin.
 ### SDD code-review lanes
 
 The `sdd-code-review` skill emits four stable runtime-neutral dispatch
-identifiers. OpenCode Frugal rewrites those task descriptions to fresh-context,
+identifiers. OpenCode Model Router rewrites those task descriptions to fresh-context,
 read-only lane agents:
 
 | Dispatch identifier | Agent role | Bundled/GPT profile |
@@ -71,7 +71,7 @@ Model routing can be configured globally or per checkout. Start a global
 GPT+Qwen profile with:
 
 ```sh
-cp "$HOME/.agents/plugins/opencode-frugal/examples/gpt-based.json.example" \
+cp "$HOME/.agents/plugins/opencode-model-router/examples/gpt-based.json.example" \
   "$HOME/.agents/models.json"
 ```
 
@@ -130,8 +130,8 @@ continues at the next level. Restart OpenCode after changing either file.
 - Worker responses must include the `<frugal_result ...>` footer documented in
   their prompts. Missing footers are surfaced to the orchestrator.
 - Task metadata is appended to
-  `${XDG_DATA_HOME:-~/.local/share}/opencode-frugal/metrics.jsonl`; prompts and
+  `${XDG_DATA_HOME:-~/.local/share}/opencode-model-router/metrics.jsonl`; prompts and
   response bodies are not recorded.
 
-Set `OPENCODE_FRUGAL_ALLOW_UNROUTED=1` before starting OpenCode to bypass the
+Set `OPENCODE_MODEL_ROUTER_ALLOW_UNROUTED=1` before starting OpenCode to bypass the
 task-agent allowlist for recovery.

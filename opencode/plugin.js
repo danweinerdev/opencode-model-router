@@ -95,7 +95,7 @@ const SENSITIVE = [
 ]
 
 const ROUTING_POLICY = `
-OpenCode Frugal routing policy:
+OpenCode model routing policy:
 - The primary orchestrator owns plans, test strategy, decisions, approvals, verification judgments, and final synthesis.
 - Delegate semantic analysis of large files, diffs, failures, and architecture to @reasoner.
 - Delegate structured extraction, grep-result synthesis, comparison, and aggregation to @extractor.
@@ -406,16 +406,16 @@ export function routeTask(args) {
 export function validateTask(args, env = process.env, remoteWorkers = DEFAULT_REMOTE_WORKERS) {
   const worker = args?.subagent_type
   const configured = WORKERS.includes(worker)
-  if (!configured && env.OPENCODE_FRUGAL_ALLOW_UNROUTED !== "1") {
+  if (!configured && env.OPENCODE_MODEL_ROUTER_ALLOW_UNROUTED !== "1") {
     throw new Error(
-      `OpenCode Frugal blocked unconfigured subagent ${JSON.stringify(worker)}; use one of: ${WORKERS.join(", ")}`,
+      `OpenCode Model Router blocked unconfigured subagent ${JSON.stringify(worker)}; use one of: ${WORKERS.join(", ")}`,
     )
   }
 
   const text = typeof args.prompt === "string" ? args.prompt : ""
   if ((!configured || remoteWorkers.has(worker)) && SENSITIVE.some((pattern) => pattern.test(text))) {
     throw new Error(
-      `OpenCode Frugal blocked sensitive-looking material from remote worker ${worker}; use a local worker or remove the sensitive input`,
+      `OpenCode Model Router blocked sensitive-looking material from remote worker ${worker}; use a local worker or remove the sensitive input`,
     )
   }
 }
@@ -426,7 +426,7 @@ export function hasResultFooter(output) {
 
 function metricsPath(env = process.env) {
   const root = env.XDG_DATA_HOME || join(homedir(), ".local", "share")
-  return join(root, "opencode-frugal", "metrics.jsonl")
+  return join(root, "opencode-model-router", "metrics.jsonl")
 }
 
 async function recordMetric(input, output) {
@@ -453,7 +453,7 @@ export function hooksForModels(models) {
     },
     "experimental.chat.system.transform": async (_input, output) => {
       output.system.push(ROUTING_POLICY)
-      if (models.warning) output.system.push(`OpenCode Frugal configuration warning: ${models.warning}`)
+      if (models.warning) output.system.push(`OpenCode Model Router configuration warning: ${models.warning}`)
     },
     "tool.definition": async (input, output) => {
       if (input.toolID !== "task") return
@@ -468,13 +468,13 @@ export function hooksForModels(models) {
       if (input.tool !== "task") return
       const valid = hasResultFooter(typeof output.output === "string" ? output.output : "")
       if (!valid) {
-        output.output = `${output.output}\n\n[OpenCode Frugal: worker omitted its result contract; validate the result before relying on it.]`
+        output.output = `${output.output}\n\n[OpenCode Model Router: worker omitted its result contract; validate the result before relying on it.]`
       }
       await recordMetric(input, output).catch(() => {})
     },
   }
 }
 
-export default async function opencodeFrugal(input) {
+export default async function opencodeModelRouter(input) {
   return hooksForModels(await loadModelConfig(input.worktree))
 }

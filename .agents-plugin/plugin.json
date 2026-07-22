@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "name": "opencode-frugal",
+  "name": "opencode-model-router",
   "skills": "skills",
   "opencode": {
     "plugin": "opencode/plugin.js"
