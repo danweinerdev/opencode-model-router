@@ -1,0 +1,44 @@
+# opencode-frugal
+
+Model-tier routing and guardrails for OpenCode.
+
+## Roles
+
+| Agent | Model | Role |
+| --- | --- | --- |
+| `orchestrator` | `openai/gpt-5.6-sol` | Planning, testing, decisions, and final synthesis |
+| `reasoner` | `openai/gpt-5.6-terra` | Semantic analysis of files, diffs, failures, and architecture |
+| `extractor` | `openai/gpt-5.6-luna-fast` | Search, extraction, comparison, and aggregation |
+| `bulk-researcher` | `llama.cpp/qwen3-coder-next-q4` | Broad local and web collection with first-pass summaries |
+| `bounded-editor` | `llama.cpp/qwen3-coder-next-q4` | Explicit, bounded edits and verification |
+
+The research and editing roles are separate capability boundaries even though
+they use the same local model. External content never reaches an edit-capable
+agent through this plugin.
+
+## Installation
+
+This repository is designed for the declarative plugin reconciler in
+`danweinerdev/opencode-env`. It does not ship or execute an installer. Add it as
+a registered submodule under `~/.agents/plugins/`, then run:
+
+```sh
+~/.agents/refresh.sh
+```
+
+Restart OpenCode after activation. OpenCode loads configuration and plugins
+only at startup.
+
+## Controls
+
+- Only the four configured worker agents may be launched through `task`.
+- Remote workers reject task prompts containing obvious secret-bearing paths
+  or private-key material. This is a guardrail, not content classification.
+- Worker responses must include the `<frugal_result ...>` footer documented in
+  their prompts. Missing footers are surfaced to the orchestrator.
+- Task metadata is appended to
+  `${XDG_DATA_HOME:-~/.local/share}/opencode-frugal/metrics.jsonl`; prompts and
+  response bodies are not recorded.
+
+Set `OPENCODE_FRUGAL_ALLOW_UNROUTED=1` before starting OpenCode to bypass the
+task-agent allowlist for recovery.
