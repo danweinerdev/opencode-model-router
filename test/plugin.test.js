@@ -44,6 +44,47 @@ test("orchestrator can launch only configured workers", async () => {
   for (const worker of WORKERS) assert.equal(rules[worker], "allow")
 })
 
+test("read-only workers share bounded shell inspection permissions", async () => {
+  const config = {}
+  await applyRoutingConfig(config, DEFAULT_MODEL_CONFIG, async () => true)
+
+  for (const name of [
+    "reasoner",
+    "extractor",
+    "bulk-researcher",
+    "review-plan-drift",
+    "review-quality",
+    "review-spec-compliance",
+    "review-blind-spots",
+  ]) {
+    const bash = config.agent[name].permission.bash
+    assert.equal(bash["*"], "deny")
+    for (const command of ["ls", "grep *", "cat *", "git diff *", "git status"]) {
+      assert.equal(bash[command], "allow", `${name} should allow ${command}`)
+    }
+    for (const command of ["find *", "sed *", "git checkout *", "rm *"]) {
+      assert.equal(bash[command], undefined, `${name} should not override the deny rule for ${command}`)
+    }
+  }
+})
+
+test("bounded editor prefers edit tools and blocks script-based file edits", async () => {
+  const config = {}
+  await applyRoutingConfig(config, DEFAULT_MODEL_CONFIG, async () => true)
+
+  const agent = config.agent["bounded-editor"]
+  const bash = agent.permission.bash
+  assert.equal(bash["*"], "ask")
+  for (const command of ["ls", "grep *", "cat *", "git diff *", "git status"]) {
+    assert.equal(bash[command], "allow")
+  }
+  for (const command of ["python*", "*/python*", "node*", "sed -i*", "bash -c*"]) {
+    assert.equal(bash[command], "deny")
+  }
+  assert.match(agent.prompt, /Use `edit` for modifications and `write` only when creating a new file/)
+  assert.match(agent.prompt, /Never\s+modify files through Python/)
+})
+
 test("registers code-review lanes with profile-specific models", async () => {
   const config = {}
   await applyRoutingConfig(config, DEFAULT_MODEL_CONFIG, async () => true)

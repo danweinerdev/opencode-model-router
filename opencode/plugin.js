@@ -87,6 +87,51 @@ const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 const LOCAL_HEALTH_TIMEOUT_MS = 1000
 const REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"])
 const DEFAULT_REMOTE_WORKERS = new Set(["reasoner", "extractor"])
+const READ_ONLY_SHELL_COMMANDS = Object.freeze([
+  "pwd",
+  "ls",
+  "cat",
+  "head",
+  "tail",
+  "grep",
+  "wc",
+  "basename",
+  "dirname",
+  "readlink",
+  "realpath",
+  "file",
+  "stat",
+  "cmp",
+  "diff",
+  "git diff",
+  "git show",
+  "git status",
+  "git log",
+  "git grep",
+  "git ls-files",
+  "git ls-tree",
+  "git rev-parse",
+])
+const SCRIPT_EDIT_SHELL_PATTERNS = Object.freeze([
+  "python*",
+  "*/python*",
+  "node*",
+  "*/node*",
+  "perl*",
+  "*/perl*",
+  "ruby*",
+  "*/ruby*",
+  "sed -i*",
+  "*/sed -i*",
+  "sed --in-place*",
+  "*/sed --in-place*",
+  "sh -c*",
+  "*/sh -c*",
+  "bash -c*",
+  "*/bash -c*",
+  "zsh -c*",
+  "*/zsh -c*",
+])
 const SENSITIVE = [
   /(^|[\s/])\.env(?:\.|\s|$)/i,
   /(^|[\s/])(credentials?|secrets?)(?:[\s/.:]|$)/i,
@@ -253,6 +298,29 @@ function profileFields(profile) {
   }
 }
 
+function inspectionShellPermissions(defaultAction) {
+  return {
+    "*": defaultAction,
+    ...Object.fromEntries(
+      READ_ONLY_SHELL_COMMANDS.flatMap((command) => [
+        [command, "allow"],
+        [`${command} *`, "allow"],
+      ]),
+    ),
+  }
+}
+
+function readOnlyShellPermissions() {
+  return inspectionShellPermissions("deny")
+}
+
+function boundedEditorShellPermissions() {
+  return {
+    ...inspectionShellPermissions("ask"),
+    ...Object.fromEntries(SCRIPT_EDIT_SHELL_PATTERNS.map((pattern) => [pattern, "deny"])),
+  }
+}
+
 function localModel(config, model) {
   const providerID = model.slice(0, model.indexOf("/"))
   const baseURL = config.provider?.[providerID]?.options?.baseURL
@@ -315,12 +383,7 @@ export async function applyRoutingConfig(
         glob: "allow",
         grep: "allow",
         list: "allow",
-        bash: {
-          "*": "deny",
-          "git diff*": "allow",
-          "git show*": "allow",
-          "git status*": "allow",
-        },
+        bash: readOnlyShellPermissions(),
       },
     },
     extractor: {
@@ -334,6 +397,7 @@ export async function applyRoutingConfig(
         glob: "allow",
         grep: "allow",
         list: "allow",
+        bash: readOnlyShellPermissions(),
       },
     },
     "bulk-researcher": {
@@ -349,6 +413,7 @@ export async function applyRoutingConfig(
         list: "allow",
         webfetch: "allow",
         websearch: "allow",
+        bash: readOnlyShellPermissions(),
       },
     },
     "bounded-editor": {
@@ -363,7 +428,7 @@ export async function applyRoutingConfig(
         glob: "allow",
         grep: "allow",
         list: "allow",
-        bash: "ask",
+        bash: boundedEditorShellPermissions(),
       },
     },
     summary: profileFields(role("summary")),
@@ -382,13 +447,7 @@ export async function applyRoutingConfig(
         glob: "allow",
         grep: "allow",
         list: "allow",
-        bash: {
-          "*": "deny",
-          "git diff*": "allow",
-          "git show*": "allow",
-          "git status*": "allow",
-          "git log*": "allow",
-        },
+        bash: readOnlyShellPermissions(),
       },
     }
   }

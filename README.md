@@ -127,6 +127,13 @@ continues at the next level. Restart OpenCode after changing either file.
   through `task`.
 - Remote workers reject task prompts containing obvious secret-bearing paths
   or private-key material. This is a guardrail, not content classification.
+- Read-only workers may run a bounded common set of file inspection, search,
+  comparison, and Git inspection shell commands. Other shell commands remain
+  denied. This is a cooperative guardrail rather than a filesystem sandbox;
+  OpenCode shell permissions do not independently constrain output redirection.
+- The bounded editor uses the same inspection allowlist, asks before other
+  verification commands, and denies common interpreter and in-place editing
+  command patterns. Its prompt directs file changes through `edit` and `write`.
 - Worker responses must include the `<frugal_result ...>` footer documented in
   their prompts. Missing footers are surfaced to the orchestrator.
 - Task metadata is appended to
