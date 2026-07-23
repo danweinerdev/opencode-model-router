@@ -4,6 +4,8 @@ import test from "node:test"
 
 import {
   DEFAULT_MODEL_CONFIG,
+  BULK_RESEARCHER_WEBFETCH_SESSION_LIMIT,
+  BULK_RESEARCHER_WEBFETCH_URL_LIMIT,
   MODELS,
   WORKERS,
   applyRoutingConfig,
@@ -30,6 +32,11 @@ test("configures exact models and default orchestrator", async () => {
   assert.equal(config.agent.extractor.options.reasoningEffort, "medium")
   assert.equal(config.agent["bulk-researcher"].model, MODELS.local)
   assert.equal(config.agent["bounded-editor"].model, MODELS.local)
+  assert.equal(config.agent["bulk-researcher"].steps, 12)
+  assert.equal(config.agent["bulk-researcher"].permission.doom_loop, "deny")
+  assert.match(config.agent["bulk-researcher"].prompt, /at most 8 successful or allowed `webfetch` requests/)
+  assert.match(config.agent["bulk-researcher"].prompt, /same canonical URL at most twice/)
+  assert.match(config.agent["bulk-researcher"].prompt, /End with exactly one status footer/)
   assert.equal(config.agent["bulk-researcher"].options, undefined)
   assert.equal(config.agent["bounded-editor"].options, undefined)
   assert.deepEqual(config.provider, { local: {} })
@@ -258,6 +265,100 @@ test("plugin hook routes review lanes before enforcing the allowlist", async () 
   }
   await hooks["tool.execute.before"]({ tool: "task" }, output)
   assert.equal(output.args.subagent_type, "review-blind-spots")
+})
+
+test("bulk-researcher webfetch circuit allows two canonical URL calls and rejects the third", async () => {
+  const hooks = hooksForModels({ config: DEFAULT_MODEL_CONFIG, source: "test" })
+  await hooks["chat.params"]({ sessionID: "bulk-url", agent: "bulk-researcher" }, {})
+  const fetch = (url) => hooks["tool.execute.before"]({ tool: "webfetch", sessionID: "bulk-url" }, { args: { url } })
+
+  for (let index = 0; index < BULK_RESEARCHER_WEBFETCH_URL_LIMIT; index += 1) {
+    await fetch(`https://example.test/report#${index}`)
+  }
+  await assert.rejects(fetch("https://example.test/report#third"), /canonical URL has reached its limit/)
+})
+
+test("bulk-researcher webfetch circuit rejects the ninth allowed fetch", async () => {
+  const hooks = hooksForModels({ config: DEFAULT_MODEL_CONFIG, source: "test" })
+  await hooks["chat.message"]({ sessionID: "bulk-total", agent: "bulk-researcher" }, {})
+  const fetch = (url) => hooks["tool.execute.before"]({ tool: "webfetch", sessionID: "bulk-total" }, { args: { url } })
+
+  for (let index = 0; index < BULK_RESEARCHER_WEBFETCH_SESSION_LIMIT; index += 1) {
+    await fetch(`https://example.test/${index}`)
+  }
+  await assert.rejects(fetch("https://example.test/ninth"), /session has reached its limit/)
+})
+
+test("bulk-researcher webfetch circuit rejects a canonical URL after an error", async () => {
+  const hooks = hooksForModels({ config: DEFAULT_MODEL_CONFIG, source: "test" })
+  await hooks["chat.params"]({ sessionID: "bulk-failure", agent: "bulk-researcher" }, {})
+  await hooks["tool.execute.before"](
+    { tool: "webfetch", sessionID: "bulk-failure", callID: "failed-call" },
+    { args: { url: "https://example.test/report#first" } },
+  )
+  await hooks.event({
+    event: {
+      type: "message.part.updated",
+      properties: {
+        part: {
+          type: "tool",
+          tool: "webfetch",
+          sessionID: "bulk-failure",
+          callID: "failed-call",
+          state: {
+            status: "error",
+            input: { url: "https://example.test/report#first" },
+            error: "request failed",
+          },
+        },
+      },
+    },
+  })
+
+  await assert.rejects(
+    hooks["tool.execute.before"](
+      { tool: "webfetch", sessionID: "bulk-failure", callID: "retry-call" },
+      { args: { url: "https://example.test/report#retry" } },
+    ),
+    /previous request for this canonical URL failed/,
+  )
+})
+
+test("webfetch circuit does not affect non-bulk-researcher sessions", async () => {
+  const hooks = hooksForModels({ config: DEFAULT_MODEL_CONFIG, source: "test" })
+  await hooks["chat.params"]({ sessionID: "reasoner", agent: "reasoner" }, {})
+  for (let index = 0; index <= BULK_RESEARCHER_WEBFETCH_SESSION_LIMIT; index += 1) {
+    await hooks["tool.execute.before"](
+      { tool: "webfetch", sessionID: "reasoner" },
+      { args: { url: "https://example.test/same-url" } },
+    )
+  }
+})
+
+test("session lifecycle events clear bulk-researcher webfetch circuit state", async () => {
+  const events = [
+    (sessionID) => ({ type: "session.idle", properties: { sessionID } }),
+    (sessionID) => ({ type: "session.deleted", properties: { info: { id: sessionID } } }),
+    (sessionID) => ({ type: "session.error", properties: { sessionID } }),
+  ]
+
+  for (const [index, event] of events.entries()) {
+    const hooks = hooksForModels({ config: DEFAULT_MODEL_CONFIG, source: "test" })
+    const sessionID = `cleanup-${index}`
+    const fetch = () =>
+      hooks["tool.execute.before"](
+        { tool: "webfetch", sessionID },
+        { args: { url: "https://example.test/report" } },
+      )
+    await hooks["chat.params"]({ sessionID, agent: "bulk-researcher" }, {})
+    await fetch()
+    await fetch()
+    await hooks.event({ event: event(sessionID) })
+    await hooks["chat.params"]({ sessionID, agent: "bulk-researcher" }, {})
+    await fetch()
+    await fetch()
+    await assert.rejects(fetch(), /canonical URL has reached its limit/)
+  }
 })
 
 test("pre-config hook state treats every worker as remote", async () => {

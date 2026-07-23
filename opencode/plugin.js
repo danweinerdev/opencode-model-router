@@ -85,6 +85,8 @@ const REVIEW_LANE_DESCRIPTIONS = Object.freeze({
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 const LOCAL_HEALTH_TIMEOUT_MS = 1000
+export const BULK_RESEARCHER_WEBFETCH_URL_LIMIT = 2
+export const BULK_RESEARCHER_WEBFETCH_SESSION_LIMIT = 8
 const REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"])
 const DEFAULT_REMOTE_WORKERS = new Set(["reasoner", "extractor"])
 const READ_ONLY_SHELL_COMMANDS = Object.freeze([
@@ -333,6 +335,30 @@ function localModel(config, model) {
   }
 }
 
+function hookSessionID(input) {
+  const sessionID = input?.sessionID ?? input?.sessionId ?? input?.session?.id
+  return typeof sessionID === "string" && sessionID ? sessionID : undefined
+}
+
+function hookAgent(input, output) {
+  const agent = input?.agent ?? input?.params?.agent ?? output?.agent ?? output?.params?.agent
+  return typeof agent === "string" ? agent : undefined
+}
+
+function webfetchFingerprint(url) {
+  if (typeof url !== "string") return `invalid:${typeof url}:${String(url)}`
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return `invalid:string:${url}`
+    }
+    parsed.hash = ""
+    return parsed.toString()
+  } catch {
+    return `invalid:string:${url}`
+  }
+}
+
 export async function applyRoutingConfig(
   config,
   modelConfig = DEFAULT_MODEL_CONFIG,
@@ -403,10 +429,12 @@ export async function applyRoutingConfig(
     "bulk-researcher": {
       description: "Collects broad local or web evidence and returns concise source-linked summaries.",
       mode: "subagent",
+      steps: 12,
       ...profileFields(role("bulk-researcher")),
       prompt: prompts["bulk-researcher"],
       permission: {
         "*": "deny",
+        doom_loop: "deny",
         read: "allow",
         glob: "allow",
         grep: "allow",
@@ -505,7 +533,65 @@ async function recordMetric(input, output) {
 
 export function hooksForModels(models) {
   let remoteWorkers = new Set(WORKERS)
+  const sessionAgents = new Map()
+  const webfetchCircuits = new Map()
+  const rememberSessionAgent = (input, output) => {
+    const sessionID = hookSessionID(input)
+    const agent = hookAgent(input, output)
+    if (sessionID && agent) sessionAgents.set(sessionID, agent)
+  }
+  const clearSession = (sessionID) => {
+    if (typeof sessionID !== "string" || !sessionID) return
+    sessionAgents.delete(sessionID)
+    webfetchCircuits.delete(sessionID)
+  }
+  const enforceBulkResearchWebfetchLimit = (input, output) => {
+    const sessionID = hookSessionID(input)
+    if (!sessionID || sessionAgents.get(sessionID) !== "bulk-researcher") return
+    const fingerprint = webfetchFingerprint(output?.args?.url)
+    const circuit =
+      webfetchCircuits.get(sessionID) ?? { total: 0, urls: new Map(), failed: new Set(), calls: new Map() }
+    const urlCalls = circuit.urls.get(fingerprint) ?? 0
+    if (circuit.failed.has(fingerprint)) {
+      throw new Error(
+        "OpenCode Model Router blocked bulk-researcher webfetch: the previous request for this canonical URL failed. Use websearch or another source and return a partial result with a blocked or uncertain footer.",
+      )
+    }
+    if (urlCalls >= BULK_RESEARCHER_WEBFETCH_URL_LIMIT) {
+      throw new Error(
+        "OpenCode Model Router blocked bulk-researcher webfetch: this canonical URL has reached its limit. Use websearch or another source and return a partial result with a blocked or uncertain footer.",
+      )
+    }
+    if (circuit.total >= BULK_RESEARCHER_WEBFETCH_SESSION_LIMIT) {
+      throw new Error(
+        "OpenCode Model Router blocked bulk-researcher webfetch: this session has reached its limit. Use websearch or another source and return a partial result with a blocked or uncertain footer.",
+      )
+    }
+    circuit.total += 1
+    circuit.urls.set(fingerprint, urlCalls + 1)
+    if (typeof input.callID === "string" && input.callID) circuit.calls.set(input.callID, fingerprint)
+    webfetchCircuits.set(sessionID, circuit)
+  }
+  const recordBulkResearchWebfetchFailure = (part) => {
+    if (part?.type !== "tool" || part.tool !== "webfetch" || part.state?.status !== "error") return
+    const circuit = webfetchCircuits.get(part.sessionID)
+    if (!circuit) return
+    const fingerprint = circuit.calls.get(part.callID) ?? webfetchFingerprint(part.state.input?.url)
+    circuit.calls.delete(part.callID)
+    circuit.failed.add(fingerprint)
+  }
+  const completeBulkResearchWebfetch = (input) => {
+    const sessionID = hookSessionID(input)
+    if (!sessionID || sessionAgents.get(sessionID) !== "bulk-researcher") return
+    webfetchCircuits.get(sessionID)?.calls.delete(input.callID)
+  }
   return {
+    event: async ({ event }) => {
+      if (event.type === "message.part.updated") recordBulkResearchWebfetchFailure(event.properties.part)
+      if (event.type === "session.idle") clearSession(event.properties.sessionID)
+      if (event.type === "session.deleted") clearSession(event.properties.info.id)
+      if (event.type === "session.error") clearSession(event.properties.sessionID)
+    },
     config: async (config) => {
       const resolved = await applyRoutingConfig(config, models.config)
       remoteWorkers = resolved.remoteWorkers
@@ -518,12 +604,26 @@ export function hooksForModels(models) {
       if (input.toolID !== "task") return
       output.description = `${output.description}\n\n${ROUTING_POLICY}`
     },
+    "chat.message": async (input, output) => {
+      rememberSessionAgent(input, output)
+    },
+    "chat.params": async (input, output) => {
+      rememberSessionAgent(input, output)
+    },
     "tool.execute.before": async (input, output) => {
+      if (input.tool === "webfetch") {
+        enforceBulkResearchWebfetchLimit(input, output)
+        return
+      }
       if (input.tool !== "task") return
       routeTask(output.args)
       validateTask(output.args, process.env, remoteWorkers)
     },
     "tool.execute.after": async (input, output) => {
+      if (input.tool === "webfetch") {
+        completeBulkResearchWebfetch(input)
+        return
+      }
       if (input.tool !== "task") return
       const valid = hasResultFooter(typeof output.output === "string" ? output.output : "")
       if (!valid) {

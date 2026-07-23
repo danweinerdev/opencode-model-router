@@ -134,6 +134,10 @@ continues at the next level. Restart OpenCode after changing either file.
 - The bounded editor uses the same inspection allowlist, asks before other
   verification commands, and denies common interpreter and in-place editing
   command patterns. Its prompt directs file changes through `edit` and `write`.
+- The bulk researcher is capped at 12 steps. Its session-scoped `webfetch`
+  circuit breaker allows at most 8 fetches total and 2 calls per canonical HTTP(S)
+  URL during each active task call. Fragments are ignored, query strings remain
+  significant, and a failed URL cannot be retried during that call.
 - Worker responses must include the `<frugal_result ...>` footer documented in
   their prompts. Missing footers are surfaced to the orchestrator.
 - Task metadata is appended to
