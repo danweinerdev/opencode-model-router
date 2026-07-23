@@ -26,9 +26,11 @@ test("configures exact models and default orchestrator", async () => {
   assert.equal(config.small_model, MODELS.local)
   assert.equal(config.default_agent, "orchestrator")
   assert.equal(config.agent.reasoner.model, MODELS.reasoner)
+  assert.equal(config.agent.implementer.model, MODELS.reasoner)
   assert.equal(config.agent.extractor.model, MODELS.extractor)
   assert.equal(config.agent.orchestrator.options.reasoningEffort, "high")
   assert.equal(config.agent.reasoner.options.reasoningEffort, "medium")
+  assert.equal(config.agent.implementer.options.reasoningEffort, "high")
   assert.equal(config.agent.extractor.options.reasoningEffort, "medium")
   assert.equal(config.agent["bulk-researcher"].model, MODELS.local)
   assert.equal(config.agent["bounded-editor"].model, MODELS.local)
@@ -92,6 +94,30 @@ test("bounded editor prefers edit tools and blocks script-based file edits", asy
   assert.match(agent.prompt, /Never\s+modify files through Python/)
 })
 
+test("implementer has approved semantic implementation permissions and prompt", async () => {
+  const config = {}
+  await applyRoutingConfig(config, DEFAULT_MODEL_CONFIG, async () => true)
+
+  const agent = config.agent.implementer
+  const bash = agent.permission.bash
+  assert.equal(agent.mode, "subagent")
+  assert.equal(agent.permission["*"], "deny")
+  for (const tool of ["read", "edit", "glob", "grep", "list"]) assert.equal(agent.permission[tool], "allow")
+  assert.equal(agent.permission.webfetch, undefined)
+  assert.equal(agent.permission.task, undefined)
+  assert.equal(bash["*"], "ask")
+  for (const command of ["ls", "grep *", "cat *", "git diff *", "git status"]) {
+    assert.equal(bash[command], "allow")
+  }
+  for (const command of ["python*", "python -c*", "node*", "node -e*", "npm test", "cargo test", "bash -c*"]) {
+    assert.equal(bash[command], undefined, `${command} should fall through to the ask rule`)
+  }
+  assert.match(agent.prompt, /exactly one\s+approved implementation task/)
+  assert.match(agent.prompt, /does not match reality, requires scope expansion/)
+  assert.match(agent.prompt, /do\s+not\s+own plans, scope decisions, status, SDD\/Beads artifact state, commits, or final\s+acceptance/)
+  assert.match(agent.prompt, /<frugal_result role="implementer" status="complete" \/>/)
+})
+
 test("registers code-review lanes with profile-specific models", async () => {
   const config = {}
   await applyRoutingConfig(config, DEFAULT_MODEL_CONFIG, async () => true)
@@ -112,7 +138,12 @@ test("registers code-review lanes with profile-specific models", async () => {
   }
 })
 
-test("routes stable SDD review identifiers regardless of requested worker", () => {
+test("routes stable implementation and SDD review identifiers regardless of requested worker", () => {
+  for (const requested of ["general", "bounded-editor", "reasoner"]) {
+    const args = { description: "implement_task", subagent_type: requested }
+    assert.equal(routeTask(args), "implementer")
+    assert.equal(args.subagent_type, "implementer")
+  }
   const lanes = {
     review_plan_drift: "review-plan-drift",
     review_quality: "review-quality",
@@ -232,6 +263,14 @@ test("rejects incomplete, dangling, and ambiguous model configuration", () => {
   const nonStringLane = structuredClone(DEFAULT_MODEL_CONFIG)
   nonStringLane.roles["review-quality"] = 42
   assert.throws(() => validateModelConfig(nonStringLane), /must name a profile/)
+
+  const invalidImplementer = structuredClone(DEFAULT_MODEL_CONFIG)
+  invalidImplementer.roles.implementer = "missing"
+  assert.throws(() => validateModelConfig(invalidImplementer), /references missing profile/)
+
+  const nonStringImplementer = structuredClone(DEFAULT_MODEL_CONFIG)
+  nonStringImplementer.roles.implementer = 42
+  assert.throws(() => validateModelConfig(nonStringImplementer), /must name a profile/)
 })
 
 test("legacy profiles inherit code-review lane mappings", async () => {
@@ -252,6 +291,26 @@ test("legacy profiles inherit code-review lane mappings", async () => {
   assert.equal(config.agent["review-blind-spots"].model, MODELS.orchestrator)
 })
 
+test("legacy profiles inherit the implementer mapping from reasoner", async () => {
+  const legacy = structuredClone(DEFAULT_MODEL_CONFIG)
+  delete legacy.roles.implementer
+  validateModelConfig(legacy)
+  const config = {}
+  await applyRoutingConfig(config, legacy, async () => true)
+  assert.equal(config.agent.implementer.model, MODELS.reasoner)
+  assert.equal(config.agent.implementer.options.reasoningEffort, "medium")
+})
+
+test("project configuration selects an explicit implementer profile", async () => {
+  const project = structuredClone(DEFAULT_MODEL_CONFIG)
+  project.profiles.implementation = { model: "anthropic/claude-sonnet-5", variant: "high" }
+  validateModelConfig(project)
+  const config = {}
+  await applyRoutingConfig(config, project, async () => true)
+  assert.equal(config.agent.implementer.model, "anthropic/claude-sonnet-5")
+  assert.equal(config.agent.implementer.variant, "high")
+})
+
 test("plugin hook routes review lanes before enforcing the allowlist", async () => {
   const hooks = hooksForModels({ config: DEFAULT_MODEL_CONFIG, source: "test" })
   const config = {}
@@ -265,6 +324,17 @@ test("plugin hook routes review lanes before enforcing the allowlist", async () 
   }
   await hooks["tool.execute.before"]({ tool: "task" }, output)
   assert.equal(output.args.subagent_type, "review-blind-spots")
+})
+
+test("plugin hook routes implementation dispatch before enforcing the allowlist", async () => {
+  const hooks = hooksForModels({ config: DEFAULT_MODEL_CONFIG, source: "test" })
+  const config = {}
+  await hooks.config(config)
+  const output = {
+    args: { description: "implement_task", subagent_type: "general", prompt: "Implement the approved change" },
+  }
+  await hooks["tool.execute.before"]({ tool: "task" }, output)
+  assert.equal(output.args.subagent_type, "implementer")
 })
 
 test("bulk-researcher webfetch circuit allows two canonical URL calls and rejects the third", async () => {
@@ -385,10 +455,20 @@ test("keeps sensitive material off workers resolved to remote models", async () 
   )
   assert.equal(resolved.remoteWorkers.has("bulk-researcher"), true)
   assert.equal(resolved.remoteWorkers.has("bounded-editor"), true)
+  assert.equal(resolved.remoteWorkers.has("implementer"), true)
   assert.throws(
     () =>
       validateTask(
         { subagent_type: "bounded-editor", prompt: "read .env.production" },
+        {},
+        resolved.remoteWorkers,
+      ),
+    /sensitive-looking material/,
+  )
+  assert.throws(
+    () =>
+      validateTask(
+        { subagent_type: "implementer", prompt: "read .env.production" },
         {},
         resolved.remoteWorkers,
       ),
@@ -407,6 +487,7 @@ test("keeps local workers inside the local sensitive-data boundary", async () =>
   const resolved = await applyRoutingConfig(config, DEFAULT_MODEL_CONFIG, async () => true)
   assert.equal(resolved.remoteWorkers.has("bulk-researcher"), false)
   assert.equal(resolved.remoteWorkers.has("bounded-editor"), false)
+  assert.equal(resolved.remoteWorkers.has("implementer"), true)
 })
 
 test("checked-in examples conform to the project model schema", async () => {
@@ -426,6 +507,8 @@ test("Claude example assigns supported effort variants by role", async () => {
   assert.equal(config.agent.orchestrator.variant, "high")
   assert.equal(config.agent.reasoner.model, "anthropic/claude-sonnet-5")
   assert.equal(config.agent.reasoner.variant, "medium")
+  assert.equal(config.agent.implementer.model, "anthropic/claude-sonnet-5")
+  assert.equal(config.agent.implementer.variant, "high")
   assert.equal(config.agent.extractor.model, "anthropic/claude-haiku-4-5")
   assert.equal(config.agent.extractor.variant, undefined)
   assert.equal(config.agent["review-blind-spots"].model, "anthropic/claude-opus-4-8")

@@ -11,13 +11,15 @@ replace these model assignments without changing agent permissions or prompts.
 | --- | --- | --- |
 | `orchestrator` | `openai/gpt-5.6-sol` | Planning, testing, decisions, and final synthesis |
 | `reasoner` | `openai/gpt-5.6-terra` | Semantic analysis of files, diffs, failures, and architecture |
+| `implementer` | `openai/gpt-5.6-terra` | One approved semantic code implementation task and its specified verification |
 | `extractor` | `openai/gpt-5.6-luna-fast` | Search, extraction, comparison, and aggregation |
 | `bulk-researcher` | `llama.cpp/qwen3-coder-next-q4` | Broad local and web collection with first-pass summaries |
 | `bounded-editor` | `llama.cpp/qwen3-coder-next-q4` | Explicit, bounded edits and verification |
 
-OpenAI reasoning effort defaults are `high` for the orchestrator and `medium`
-for both the reasoner and extractor. The local Qwen agents intentionally set no
-provider reasoning options; llama-server owns their inference tuning.
+OpenAI reasoning effort defaults are `high` for the orchestrator and implementer
+and `medium` for both the reasoner and extractor. The local Qwen agents
+intentionally set no provider reasoning options; llama-server owns their
+inference tuning.
 
 At startup, the plugin requests the configured llama-server `/models` endpoint
 and requires it to advertise `qwen3-coder-next`. If the endpoint is unavailable
@@ -51,6 +53,14 @@ Lane input isolation is cooperative, matching SDD Planner's contract; it is not
 a filesystem sandbox. Agent permissions prevent edits and most shell commands,
 while the supplied lane prompt defines which planning, specification, and code
 inputs the reviewer may consult.
+
+### Implementation dispatch
+
+The stable `implement_task` dispatch identifier always rewrites a requested
+task worker to `implementer` before allowlist and sensitive-data checks. The
+implementer performs one approved semantic code task, checks its plan against
+repository reality, runs only specified verification, and returns control for
+scope, status, and final acceptance decisions.
 
 ## Installation
 
@@ -87,12 +97,13 @@ $WORKTREE/.agents/models.json
 
 Copy `examples/gpt-based.json.example` or
 `examples/claude-based.json.example` as a starting point. The document defines
-named profiles and maps every core runtime role to one profile. Review-lane
-roles are optional for backward compatibility; omitted lanes inherit the
+named profiles and maps every core runtime role to one profile. The `implementer`
+role and review-lane roles are optional for backward compatibility. An omitted
+implementer inherits the `reasoner` profile; omitted lanes inherit the
 `reasoner`, `extractor`, or `orchestrator` role documented above. Additional
 profiles may be retained as alternatives and selected by changing `roles`;
-unknown fields, missing core roles, dangling profile names, and invalid model
-identifiers invalidate the complete override.
+unknown fields, missing required core roles, dangling profile names, and invalid
+model identifiers invalidate the complete override.
 
 Checkout-local files should also be ignored locally or by the project. The
 plugin reads them but does not modify repository ignore policy.
@@ -123,17 +134,21 @@ continues at the next level. Restart OpenCode after changing either file.
 
 ## Controls
 
-- Only configured general workers and code-review lane workers may be launched
-  through `task`.
+- Only configured general workers, including `implementer`, and code-review lane
+  workers may be launched through `task`.
 - Remote workers reject task prompts containing obvious secret-bearing paths
   or private-key material. This is a guardrail, not content classification.
 - Read-only workers may run a bounded common set of file inspection, search,
   comparison, and Git inspection shell commands. Other shell commands remain
   denied. This is a cooperative guardrail rather than a filesystem sandbox;
   OpenCode shell permissions do not independently constrain output redirection.
-- The bounded editor uses the same inspection allowlist, asks before other
-  verification commands, and denies common interpreter and in-place editing
-  command patterns. Its prompt directs file changes through `edit` and `write`.
+- The bounded editor and implementer use the same inspection allowlist and ask
+  before other verification commands. The bounded editor denies interpreter
+  commands; the implementer permits user-approved runtime and inline
+  verification commands while its prompt prohibits using them to edit files.
+  Their prompts direct file changes through `edit` and `write`. The implementer
+  has code-edit permission but no web tools or task delegation; its
+  implementation capability does not grant plan, scope, or acceptance authority.
 - The bulk researcher is capped at 12 steps. Its session-scoped `webfetch`
   circuit breaker allows at most 8 fetches total and 2 calls per canonical HTTP(S)
   URL during each active task call. Fragments are ignored, query strings remain

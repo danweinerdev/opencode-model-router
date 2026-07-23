@@ -22,6 +22,10 @@ export const CORE_MODEL_ROLES = Object.freeze([
   "title",
 ])
 
+export const IMPLEMENTATION_DISPATCH = Object.freeze({
+  implement_task: "implementer",
+})
+
 export const REVIEW_LANE_DISPATCH = Object.freeze({
   review_plan_drift: "review-plan-drift",
   review_quality: "review-quality",
@@ -29,14 +33,17 @@ export const REVIEW_LANE_DISPATCH = Object.freeze({
   review_blind_spots: "review-blind-spots",
 })
 
+export const IMPLEMENTATION_ROLES = Object.freeze(Object.values(IMPLEMENTATION_DISPATCH))
 export const REVIEW_LANE_ROLES = Object.freeze(Object.values(REVIEW_LANE_DISPATCH))
-export const MODEL_ROLES = Object.freeze([...CORE_MODEL_ROLES, ...REVIEW_LANE_ROLES])
+export const OPTIONAL_MODEL_ROLES = Object.freeze([...IMPLEMENTATION_ROLES, ...REVIEW_LANE_ROLES])
+export const MODEL_ROLES = Object.freeze([...CORE_MODEL_ROLES, ...OPTIONAL_MODEL_ROLES])
 
 export const DEFAULT_MODEL_CONFIG = Object.freeze({
   schema_version: 1,
   profiles: {
     orchestration: { model: MODELS.orchestrator, reasoning_effort: "high" },
     reasoning: { model: MODELS.reasoner, reasoning_effort: "medium" },
+    implementation: { model: MODELS.reasoner, reasoning_effort: "high" },
     extraction: { model: MODELS.extractor, reasoning_effort: "medium" },
     bulk: {
       model: MODELS.local,
@@ -47,6 +54,7 @@ export const DEFAULT_MODEL_CONFIG = Object.freeze({
   roles: {
     orchestrator: "orchestration",
     reasoner: "reasoning",
+    implementer: "implementation",
     extractor: "extraction",
     "bulk-researcher": "bulk",
     "bounded-editor": "bulk",
@@ -66,10 +74,12 @@ export const WORKERS = Object.freeze([
   "extractor",
   "bulk-researcher",
   "bounded-editor",
+  ...IMPLEMENTATION_ROLES,
   ...REVIEW_LANE_ROLES,
 ])
 
-const REVIEW_LANE_BASE_ROLES = Object.freeze({
+const OPTIONAL_ROLE_BASE_ROLES = Object.freeze({
+  implementer: "reasoner",
   "review-plan-drift": "reasoner",
   "review-quality": "reasoner",
   "review-spec-compliance": "extractor",
@@ -88,7 +98,7 @@ const LOCAL_HEALTH_TIMEOUT_MS = 1000
 export const BULK_RESEARCHER_WEBFETCH_URL_LIMIT = 2
 export const BULK_RESEARCHER_WEBFETCH_SESSION_LIMIT = 8
 const REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"])
-const DEFAULT_REMOTE_WORKERS = new Set(["reasoner", "extractor"])
+const DEFAULT_REMOTE_WORKERS = new Set(["reasoner", "implementer", "extractor"])
 const READ_ONLY_SHELL_COMMANDS = Object.freeze([
   "pwd",
   "ls",
@@ -147,6 +157,7 @@ OpenCode model routing policy:
 - Delegate semantic analysis of large files, diffs, failures, and architecture to @reasoner.
 - Delegate structured extraction, grep-result synthesis, comparison, and aggregation to @extractor.
 - Delegate broad file or web collection and first-pass summaries to @bulk-researcher.
+- Delegate one approved semantic code implementation task, including its specified verification, to @implementer.
 - Delegate only explicit, bounded edits with named files and verification to @bounded-editor.
 - Use deterministic tools directly when they answer the question without model judgment.
 - Treat worker output as evidence to validate, not proof. Escalate uncertain worker results rather than inventing certainty.
@@ -217,7 +228,7 @@ export function validateModelConfig(value) {
       throw new Error(`roles.${role} references missing profile ${profile}`)
     }
   }
-  for (const role of REVIEW_LANE_ROLES) {
+  for (const role of OPTIONAL_MODEL_ROLES) {
     if (!Object.hasOwn(value.roles, role)) continue
     const profile = value.roles[role]
     if (typeof profile !== "string" || !profile) throw new Error(`roles.${role} must name a profile`)
@@ -323,6 +334,10 @@ function boundedEditorShellPermissions() {
   }
 }
 
+function implementerShellPermissions() {
+  return inspectionShellPermissions("ask")
+}
+
 function localModel(config, model) {
   const providerID = model.slice(0, model.indexOf("/"))
   const baseURL = config.provider?.[providerID]?.options?.baseURL
@@ -366,7 +381,7 @@ export async function applyRoutingConfig(
 ) {
   const prompts = Object.fromEntries(
     await Promise.all(
-      ["orchestrator", "reasoner", "extractor", "bulk-researcher", "bounded-editor", "reviewer"].map(
+      ["orchestrator", "reasoner", "extractor", "bulk-researcher", "bounded-editor", "implementer", "reviewer"].map(
         async (name) => [name, await prompt(name)],
       ),
     ),
@@ -376,7 +391,7 @@ export async function applyRoutingConfig(
     profiles[name] = (await availability(config, profile)) ? profile : profile.fallback
   }
   const role = (name) => {
-    const profile = modelConfig.roles[name] ?? modelConfig.roles[REVIEW_LANE_BASE_ROLES[name]]
+    const profile = modelConfig.roles[name] ?? modelConfig.roles[OPTIONAL_ROLE_BASE_ROLES[name]]
     return profiles[profile]
   }
 
@@ -459,6 +474,21 @@ export async function applyRoutingConfig(
         bash: boundedEditorShellPermissions(),
       },
     },
+    implementer: {
+      description: "Implements one approved semantic code task and its specified verification without owning scope decisions.",
+      mode: "subagent",
+      ...profileFields(role("implementer")),
+      prompt: prompts.implementer,
+      permission: {
+        "*": "deny",
+        read: "allow",
+        edit: "allow",
+        glob: "allow",
+        grep: "allow",
+        list: "allow",
+        bash: implementerShellPermissions(),
+      },
+    },
     summary: profileFields(role("summary")),
     compaction: profileFields(role("compaction")),
     title: profileFields(role("title")),
@@ -485,7 +515,7 @@ export async function applyRoutingConfig(
 }
 
 export function routeTask(args) {
-  const worker = REVIEW_LANE_DISPATCH[args?.description]
+  const worker = IMPLEMENTATION_DISPATCH[args?.description] ?? REVIEW_LANE_DISPATCH[args?.description]
   if (worker) args.subagent_type = worker
   return worker
 }

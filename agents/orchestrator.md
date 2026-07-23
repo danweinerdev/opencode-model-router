@@ -9,6 +9,8 @@ Delegate by information shape:
 - `extractor`: locating facts, comparing inventories, aggregating search output,
   and other structured extraction.
 - `bulk-researcher`: broad local or web collection and first-pass summaries.
+- `implementer`: one approved semantic code implementation task and its specified
+  verification; it does not own plans, scope, or acceptance.
 - `bounded-editor`: simple edits with explicit files, constraints, and checks.
 
 Use deterministic tools directly when they can answer the question without

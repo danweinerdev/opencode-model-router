@@ -9,6 +9,10 @@
       "model": "anthropic/claude-sonnet-5",
       "variant": "medium"
     },
+    "implementation": {
+      "model": "anthropic/claude-sonnet-5",
+      "variant": "high"
+    },
     "extraction": {
       "model": "anthropic/claude-haiku-4-5"
     },
@@ -35,6 +39,7 @@
   "roles": {
     "orchestrator": "orchestration",
     "reasoner": "reasoning",
+    "implementer": "implementation",
     "extractor": "extraction",
     "bulk-researcher": "bulk",
     "bounded-editor": "bulk",

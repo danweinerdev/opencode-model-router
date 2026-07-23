@@ -9,6 +9,10 @@
       "model": "openai/gpt-5.6-terra",
       "reasoning_effort": "medium"
     },
+    "implementation": {
+      "model": "openai/gpt-5.6-terra",
+      "reasoning_effort": "high"
+    },
     "extraction": {
       "model": "openai/gpt-5.6-luna-fast",
       "reasoning_effort": "medium"
@@ -21,6 +25,7 @@
   "roles": {
     "orchestrator": "orchestration",
     "reasoner": "reasoning",
+    "implementer": "implementation",
     "extractor": "extraction",
     "bulk-researcher": "bulk",
     "bounded-editor": "bulk",
