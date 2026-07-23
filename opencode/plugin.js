@@ -106,6 +106,7 @@ const READ_ONLY_SHELL_COMMANDS = Object.freeze([
   "head",
   "tail",
   "grep",
+  "rg",
   "wc",
   "basename",
   "dirname",

@@ -68,7 +68,7 @@ test("read-only workers share bounded shell inspection permissions", async () =>
   ]) {
     const bash = config.agent[name].permission.bash
     assert.equal(bash["*"], "deny")
-    for (const command of ["ls", "grep *", "cat *", "git diff *", "git status"]) {
+    for (const command of ["ls", "grep *", "rg", "rg *", "cat *", "git diff *", "git status"]) {
       assert.equal(bash[command], "allow", `${name} should allow ${command}`)
     }
     for (const command of ["find *", "sed *", "git checkout *", "rm *"]) {
@@ -84,7 +84,7 @@ test("bounded editor prefers edit tools and blocks script-based file edits", asy
   const agent = config.agent["bounded-editor"]
   const bash = agent.permission.bash
   assert.equal(bash["*"], "ask")
-  for (const command of ["ls", "grep *", "cat *", "git diff *", "git status"]) {
+  for (const command of ["ls", "grep *", "rg", "rg *", "cat *", "git diff *", "git status"]) {
     assert.equal(bash[command], "allow")
   }
   for (const command of ["python*", "*/python*", "node*", "sed -i*", "bash -c*"]) {
@@ -106,7 +106,7 @@ test("implementer has approved semantic implementation permissions and prompt", 
   assert.equal(agent.permission.webfetch, undefined)
   assert.equal(agent.permission.task, undefined)
   assert.equal(bash["*"], "ask")
-  for (const command of ["ls", "grep *", "cat *", "git diff *", "git status"]) {
+  for (const command of ["ls", "grep *", "rg", "rg *", "cat *", "git diff *", "git status"]) {
     assert.equal(bash[command], "allow")
   }
   for (const command of ["python*", "python -c*", "node*", "node -e*", "npm test", "cargo test", "bash -c*"]) {
