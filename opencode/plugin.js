@@ -1,6 +1,6 @@
 import { appendFile, mkdir, readFile, realpath } from "node:fs/promises"
 import { homedir } from "node:os"
-import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
+import { dirname, isAbsolute, join, relative, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 
 export const MODELS = Object.freeze({
@@ -96,7 +96,6 @@ const REVIEW_LANE_DESCRIPTIONS = Object.freeze({
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 const LOCAL_HEALTH_TIMEOUT_MS = 1000
 export const VERIFICATION_ALLOWLIST_PATH = ".agents/verification-allowlist.json"
-export const VERIFICATION_ALLOWLIST_TRUST_ENV = "OPENCODE_MODEL_ROUTER_TRUST_VERIFICATION_ALLOWLIST"
 export const BULK_RESEARCHER_WEBFETCH_URL_LIMIT = 2
 export const BULK_RESEARCHER_WEBFETCH_SESSION_LIMIT = 8
 const REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"])
@@ -323,34 +322,16 @@ export async function loadVerificationAllowlist(worktree, options = {}) {
   const {
     readFileImpl = readFile,
     realpathImpl = readFileImpl === readFile ? realpath : null,
-    env = process.env,
   } = options
   const path = join(worktree, VERIFICATION_ALLOWLIST_PATH)
   try {
     const source = await readFileImpl(path, "utf8")
-    let canonicalWorktree = resolve(worktree)
     if (realpathImpl) {
-      canonicalWorktree = await realpathImpl(worktree)
+      const canonicalWorktree = await realpathImpl(worktree)
       const canonicalPolicy = await realpathImpl(path)
       const policyRelative = relative(canonicalWorktree, canonicalPolicy)
       if (!policyRelative || policyRelative.startsWith(`..${sep}`) || policyRelative === ".." || isAbsolute(policyRelative)) {
         throw new Error("verification allowlist resolves outside the worktree")
-      }
-    }
-    const trust = env[VERIFICATION_ALLOWLIST_TRUST_ENV]
-    const trusted =
-      trust === "1" ||
-      (typeof trust === "string" &&
-        trust
-          .split(delimiter)
-          .filter(Boolean)
-          .map((candidate) => resolve(candidate))
-          .includes(resolve(canonicalWorktree)))
-    if (!trusted) {
-      return {
-        config: Object.freeze({ schema_version: 1, commands: Object.freeze([]) }),
-        source: path,
-        warning: `Project verification allowlist was ignored because ${VERIFICATION_ALLOWLIST_TRUST_ENV} does not trust this worktree.`,
       }
     }
     const value = JSON.parse(source)

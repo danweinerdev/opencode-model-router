@@ -155,24 +155,17 @@ For example:
 }
 ```
 
-The file is project-local and is not merged with a home-level policy. Because
-verification commands execute repository-controlled code, the repository must
-also be trusted outside the checkout before the file is honored. Set the trust
-environment variable to the canonical worktree path before starting OpenCode:
-
-```sh
-export OPENCODE_MODEL_ROUTER_TRUST_VERIFICATION_ALLOWLIST="$(pwd -P)"
-```
-
-Multiple trusted worktrees use the platform path delimiter (`:` on Linux), and
-the explicit value `1` trusts verification allowlists in every worktree opened
-by that OpenCode process. Prefer canonical path entries over the global `1`
-switch. A symlinked policy that resolves outside the worktree is rejected.
+The file is project-local and is not merged with a home-level policy. Its
+presence is the trust signal: if the file exists, is valid, and resolves inside
+the worktree, its supported commands are enabled. A symlinked policy that
+resolves outside the worktree is rejected. Because every supported verifier can
+execute repository-controlled build or test code, inspect this file before
+opening an untrusted checkout in OpenCode.
 
 Commands are loaded at startup as exact permission entries rather than wildcard
 prefixes: arguments, order, and spacing must match. Immediately before an
 approved command runs, the plugin reloads the policy and blocks execution if
-the command was removed or the file became invalid/untrusted. Any non-exact
+the command was removed or the file became invalid. Any non-exact
 shell command containing an approved command is also blocked, preventing shell
 wrappers, prefixes, suffixes, compounds, and redirection from inheriting the
 automatic permission. Newly added commands require an OpenCode restart.
@@ -196,8 +189,8 @@ new command patterns or arguments:
 - Swift/.NET/Make: bare `swift test`, `dotnet test`, and
   `make test|check|lint`.
 
-An invalid or untrusted file fails closed: no project verification commands are
-added, and the orchestrator receives a sanitized warning. Only editing workers
+An invalid file fails closed: no project verification commands are added, and
+the orchestrator receives a sanitized warning. Only editing workers
 receive these allowances; read-only research and review workers remain
 unchanged. A copyable Rust example is available at
 `examples/verification-allowlist.json.example`.

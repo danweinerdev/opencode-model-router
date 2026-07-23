@@ -7,7 +7,6 @@ import {
   BULK_RESEARCHER_WEBFETCH_SESSION_LIMIT,
   BULK_RESEARCHER_WEBFETCH_URL_LIMIT,
   MODELS,
-  VERIFICATION_ALLOWLIST_TRUST_ENV,
   WORKERS,
   applyRoutingConfig,
   hasResultFooter,
@@ -191,7 +190,6 @@ test("validates strict safe verification allowlists", () => {
 
 test("loads project verification allowlist and fails closed on missing or invalid files", async () => {
   const valid = await loadVerificationAllowlist("/checkout", {
-    env: { [VERIFICATION_ALLOWLIST_TRUST_ENV]: "1" },
     readFileImpl: async (path) => {
       assert.equal(path, "/checkout/.agents/verification-allowlist.json")
       return JSON.stringify({ schema_version: 1, commands: ["cargo test --workspace"] })
@@ -210,15 +208,7 @@ test("loads project verification allowlist and fails closed on missing or invali
   assert.deepEqual([...missing.config.commands], [])
   assert.equal(missing.warning, undefined)
 
-  const untrusted = await loadVerificationAllowlist("/checkout", {
-    env: {},
-    readFileImpl: async () => JSON.stringify({ schema_version: 1, commands: ["cargo test"] }),
-  })
-  assert.deepEqual([...untrusted.config.commands], [])
-  assert.match(untrusted.warning, new RegExp(VERIFICATION_ALLOWLIST_TRUST_ENV))
-
   const invalid = await loadVerificationAllowlist("/checkout", {
-    env: { [VERIFICATION_ALLOWLIST_TRUST_ENV]: "1" },
     readFileImpl: async () => "{}",
   })
   assert.equal(invalid.source, "/checkout/.agents/verification-allowlist.json")
@@ -226,7 +216,6 @@ test("loads project verification allowlist and fails closed on missing or invali
   assert.equal(invalid.warning, "Project verification allowlist is invalid and was ignored.")
 
   const escaped = await loadVerificationAllowlist("/checkout", {
-    env: { [VERIFICATION_ALLOWLIST_TRUST_ENV]: "1" },
     readFileImpl: async () => JSON.stringify({ schema_version: 1, commands: ["cargo test"] }),
     realpathImpl: async (path) => (path.endsWith("verification-allowlist.json") ? "/outside/policy.json" : "/checkout"),
   })
