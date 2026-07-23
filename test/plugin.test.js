@@ -7,15 +7,18 @@ import {
   BULK_RESEARCHER_WEBFETCH_SESSION_LIMIT,
   BULK_RESEARCHER_WEBFETCH_URL_LIMIT,
   MODELS,
+  VERIFICATION_ALLOWLIST_TRUST_ENV,
   WORKERS,
   applyRoutingConfig,
   hasResultFooter,
   hooksForModels,
   loadModelConfig,
+  loadVerificationAllowlist,
   profileAvailable,
   routeTask,
   validateModelConfig,
   validateTask,
+  validateVerificationAllowlist,
 } from "../opencode/plugin.js"
 
 test("configures exact models and default orchestrator", async () => {
@@ -116,6 +119,185 @@ test("implementer has approved semantic implementation permissions and prompt", 
   assert.match(agent.prompt, /does not match reality, requires scope expansion/)
   assert.match(agent.prompt, /do\s+not\s+own plans, scope decisions, status, SDD\/Beads artifact state, commits, or final\s+acceptance/)
   assert.match(agent.prompt, /<frugal_result role="implementer" status="complete" \/>/)
+})
+
+test("project verification allowlist extends only editing workers with exact commands", async () => {
+  const config = {}
+  const commands = [
+    "cargo test --workspace",
+    "cargo clippy --workspace --all-targets -- -D warnings",
+    "python3 -m unittest discover",
+  ]
+  await applyRoutingConfig(config, DEFAULT_MODEL_CONFIG, async () => true, commands)
+
+  for (const name of ["implementer", "bounded-editor"]) {
+    const bash = config.agent[name].permission.bash
+    for (const command of commands) assert.equal(bash[command], "allow")
+    assert.equal(bash["cargo test *"], undefined)
+    assert.equal(bash["cargo clippy *"], undefined)
+  }
+  assert.equal(config.agent.reasoner.permission.bash[commands[0]], undefined)
+  assert.equal(config.agent["review-quality"].permission.bash[commands[0]], undefined)
+  assert.equal(config.agent["bounded-editor"].permission.bash["python*"], "deny")
+})
+
+test("validates strict safe verification allowlists", () => {
+  const value = {
+    schema_version: 1,
+    commands: [
+      "cargo check --workspace",
+      "cargo test --workspace",
+      "cargo clippy --workspace --all-targets -- -D warnings",
+      "cargo fmt --all -- --check",
+      "go test ./...",
+      "pytest",
+      "npm run lint",
+      "./gradlew check",
+    ],
+  }
+  const validated = validateVerificationAllowlist(value)
+  assert.deepEqual([...validated.commands], value.commands)
+  assert.equal(Object.isFrozen(validated), true)
+  assert.equal(Object.isFrozen(validated.commands), true)
+
+  for (const invalid of [
+    {},
+    { schema_version: 2, commands: [] },
+    { schema_version: 1, commands: "cargo test" },
+    { schema_version: 1, commands: ["cargo test", "cargo test"] },
+    { schema_version: 1, commands: ["cargo test *"] },
+    { schema_version: 1, commands: ["cargo test && rm -rf ."] },
+    { schema_version: 1, commands: ["cargo test --manifest-path ../other/Cargo.toml"] },
+    { schema_version: 1, commands: ["cargo test --manifest-path=../other/Cargo.toml"] },
+    { schema_version: 1, commands: ["pytest /tmp/outside.py"] },
+    { schema_version: 1, commands: ["pytest tests/unit"] },
+    { schema_version: 1, commands: ["pytest --basetemp=src"] },
+    { schema_version: 1, commands: ["pytest -pevil"] },
+    { schema_version: 1, commands: ["cargo fmt"] },
+    { schema_version: 1, commands: ["cargo clippy --fix"] },
+    { schema_version: 1, commands: ["go test -exec=helper ./..."] },
+    { schema_version: 1, commands: ["go vet -vettool=helper ./..."] },
+    { schema_version: 1, commands: ["gradle test -I init.gradle"] },
+    { schema_version: 1, commands: ["bun test -u"] },
+    { schema_version: 1, commands: ["npm test -- --watchAll"] },
+    { schema_version: 1, commands: ["make test -f/tmp/outside/Makefile"] },
+    { schema_version: 1, commands: ["make test -fMakefile"] },
+    { schema_version: 1, commands: ["rm -rf target"] },
+    { schema_version: 1, commands: [], extra: true },
+  ]) {
+    assert.throws(() => validateVerificationAllowlist(invalid))
+  }
+})
+
+test("loads project verification allowlist and fails closed on missing or invalid files", async () => {
+  const valid = await loadVerificationAllowlist("/checkout", {
+    env: { [VERIFICATION_ALLOWLIST_TRUST_ENV]: "1" },
+    readFileImpl: async (path) => {
+      assert.equal(path, "/checkout/.agents/verification-allowlist.json")
+      return JSON.stringify({ schema_version: 1, commands: ["cargo test --workspace"] })
+    },
+  })
+  assert.equal(valid.source, "/checkout/.agents/verification-allowlist.json")
+  assert.deepEqual([...valid.config.commands], ["cargo test --workspace"])
+  assert.equal(valid.warning, undefined)
+
+  const missing = await loadVerificationAllowlist("/checkout", async () => {
+    const error = new Error("missing")
+    error.code = "ENOENT"
+    throw error
+  })
+  assert.equal(missing.source, null)
+  assert.deepEqual([...missing.config.commands], [])
+  assert.equal(missing.warning, undefined)
+
+  const untrusted = await loadVerificationAllowlist("/checkout", {
+    env: {},
+    readFileImpl: async () => JSON.stringify({ schema_version: 1, commands: ["cargo test"] }),
+  })
+  assert.deepEqual([...untrusted.config.commands], [])
+  assert.match(untrusted.warning, new RegExp(VERIFICATION_ALLOWLIST_TRUST_ENV))
+
+  const invalid = await loadVerificationAllowlist("/checkout", {
+    env: { [VERIFICATION_ALLOWLIST_TRUST_ENV]: "1" },
+    readFileImpl: async () => "{}",
+  })
+  assert.equal(invalid.source, "/checkout/.agents/verification-allowlist.json")
+  assert.deepEqual([...invalid.config.commands], [])
+  assert.equal(invalid.warning, "Project verification allowlist is invalid and was ignored.")
+
+  const escaped = await loadVerificationAllowlist("/checkout", {
+    env: { [VERIFICATION_ALLOWLIST_TRUST_ENV]: "1" },
+    readFileImpl: async () => JSON.stringify({ schema_version: 1, commands: ["cargo test"] }),
+    realpathImpl: async (path) => (path.endsWith("verification-allowlist.json") ? "/outside/policy.json" : "/checkout"),
+  })
+  assert.deepEqual([...escaped.config.commands], [])
+  assert.equal(escaped.warning, "Project verification allowlist is invalid and was ignored.")
+})
+
+test("surfaces verification allowlist warnings in orchestrator system context", async () => {
+  const hooks = hooksForModels(
+    { config: DEFAULT_MODEL_CONFIG, source: "test" },
+    { config: { commands: [] }, warning: "invalid project verification policy" },
+  )
+  const output = { system: [] }
+  await hooks["experimental.chat.system.transform"]({}, output)
+  assert.match(output.system.join("\n"), /verification allowlist warning: invalid project verification policy/)
+})
+
+test("runtime guard blocks stale policy and shell syntax appended to approved commands", async () => {
+  let currentCommands = ["cargo test", "cargo test --workspace"]
+  const hooks = hooksForModels(
+    { config: DEFAULT_MODEL_CONFIG, source: "test" },
+    {
+      config: { commands: ["cargo test", "cargo test --workspace"] },
+      refresh: async () => ({ config: { commands: currentCommands } }),
+    },
+  )
+  await hooks["chat.params"]({ sessionID: "verification-session", agent: "implementer" }, {})
+
+  await assert.doesNotReject(() =>
+    hooks["tool.execute.before"](
+      { tool: "bash", sessionID: "verification-session" },
+      { args: { command: "cargo test" } },
+    ),
+  )
+  await assert.doesNotReject(() =>
+    hooks["tool.execute.before"](
+      { tool: "bash", sessionID: "verification-session" },
+      { args: { command: "cargo test --workspace" } },
+    ),
+  )
+  await assert.rejects(
+    hooks["tool.execute.before"](
+      { tool: "bash", sessionID: "verification-session" },
+      { args: { command: "cargo test > overwritten.txt" } },
+    ),
+    /blocked a non-exact shell use/,
+  )
+  await assert.rejects(
+    hooks["tool.execute.before"](
+      { tool: "bash", sessionID: "verification-session" },
+      { args: { command: "pwd && cargo test > overwritten.txt" } },
+    ),
+    /blocked a non-exact shell use/,
+  )
+  for (const command of ["(cargo test)", "! cargo test", "FOO=x cargo test"]) {
+    await assert.rejects(
+      hooks["tool.execute.before"](
+        { tool: "bash", sessionID: "verification-session" },
+        { args: { command } },
+      ),
+      /blocked a non-exact shell use/,
+    )
+  }
+  currentCommands = []
+  await assert.rejects(
+    hooks["tool.execute.before"](
+      { tool: "bash", sessionID: "verification-session" },
+      { args: { command: "cargo test" } },
+    ),
+    /stale project verification permission/,
+  )
 })
 
 test("registers code-review lanes with profile-specific models", async () => {
@@ -494,6 +676,9 @@ test("checked-in examples conform to the project model schema", async () => {
   for (const path of ["examples/gpt-based.json.example", "examples/claude-based.json.example"]) {
     validateModelConfig(JSON.parse(await readFile(path, "utf8")))
   }
+  validateVerificationAllowlist(
+    JSON.parse(await readFile("examples/verification-allowlist.json.example", "utf8")),
+  )
 })
 
 test("Claude example assigns supported effort variants by role", async () => {

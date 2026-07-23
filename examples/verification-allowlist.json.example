@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "commands": [
+    "cargo check --workspace",
+    "cargo test --workspace",
+    "cargo clippy --workspace --all-targets -- -D warnings",
+    "cargo fmt --all -- --check"
+  ]
+}

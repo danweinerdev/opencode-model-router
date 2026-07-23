@@ -1,6 +1,6 @@
-import { appendFile, mkdir, readFile } from "node:fs/promises"
+import { appendFile, mkdir, readFile, realpath } from "node:fs/promises"
 import { homedir } from "node:os"
-import { dirname, join } from "node:path"
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 
 export const MODELS = Object.freeze({
@@ -95,6 +95,8 @@ const REVIEW_LANE_DESCRIPTIONS = Object.freeze({
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 const LOCAL_HEALTH_TIMEOUT_MS = 1000
+export const VERIFICATION_ALLOWLIST_PATH = ".agents/verification-allowlist.json"
+export const VERIFICATION_ALLOWLIST_TRUST_ENV = "OPENCODE_MODEL_ROUTER_TRUST_VERIFICATION_ALLOWLIST"
 export const BULK_RESEARCHER_WEBFETCH_URL_LIMIT = 2
 export const BULK_RESEARCHER_WEBFETCH_SESSION_LIMIT = 8
 const REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"])
@@ -145,6 +147,55 @@ const SCRIPT_EDIT_SHELL_PATTERNS = Object.freeze([
   "zsh -c*",
   "*/zsh -c*",
 ])
+export const SUPPORTED_VERIFICATION_COMMANDS = Object.freeze([
+  "cargo check",
+  "cargo check --workspace",
+  "cargo test",
+  "cargo test --workspace",
+  "cargo clippy",
+  "cargo clippy --workspace --all-targets -- -D warnings",
+  "cargo fmt -- --check",
+  "cargo fmt --all -- --check",
+  "go test ./...",
+  "go vet ./...",
+  "pytest",
+  "python -m pytest",
+  "python3 -m pytest",
+  "python -m unittest",
+  "python3 -m unittest",
+  "python -m unittest discover",
+  "python3 -m unittest discover",
+  "npm test",
+  "npm run test",
+  "npm run lint",
+  "npm run typecheck",
+  "npm run check",
+  "pnpm test",
+  "pnpm run test",
+  "pnpm run lint",
+  "pnpm run typecheck",
+  "pnpm run check",
+  "yarn test",
+  "yarn run test",
+  "yarn run lint",
+  "yarn run typecheck",
+  "yarn run check",
+  "bun test",
+  "mvn test",
+  "mvn verify",
+  "./mvnw test",
+  "./mvnw verify",
+  "gradle test",
+  "gradle check",
+  "./gradlew test",
+  "./gradlew check",
+  "swift test",
+  "dotnet test",
+  "make test",
+  "make check",
+  "make lint",
+])
+const SUPPORTED_VERIFICATION_COMMAND_SET = new Set(SUPPORTED_VERIFICATION_COMMANDS)
 const SENSITIVE = [
   /(^|[\s/])\.env(?:\.|\s|$)/i,
   /(^|[\s/])(credentials?|secrets?)(?:[\s/.:]|$)/i,
@@ -240,6 +291,82 @@ export function validateModelConfig(value) {
   return value
 }
 
+export function validateVerificationAllowlist(value) {
+  if (!object(value)) throw new Error("verification allowlist must be an object")
+  rejectUnknown(value, ["schema_version", "commands"], "verification allowlist")
+  if (value.schema_version !== 1) throw new Error("verification allowlist schema_version must be 1")
+  if (!Array.isArray(value.commands)) throw new Error("verification allowlist commands must be an array")
+  if (value.commands.length > 64) throw new Error("verification allowlist may contain at most 64 commands")
+
+  const commands = []
+  const seen = new Set()
+  for (const command of value.commands) {
+    if (typeof command !== "string" || !command || command !== command.trim()) {
+      throw new Error("verification commands must be non-empty trimmed strings")
+    }
+    if (command.length > 512) throw new Error("verification commands may contain at most 512 characters")
+    if (!/^[A-Za-z0-9_./:@%+=,\- ]+$/.test(command)) {
+      throw new Error(`verification command contains unsafe shell syntax: ${JSON.stringify(command)}`)
+    }
+    if (!SUPPORTED_VERIFICATION_COMMAND_SET.has(command)) {
+      throw new Error(`unsupported verification command: ${JSON.stringify(command)}`)
+    }
+    if (seen.has(command)) throw new Error(`duplicate verification command: ${JSON.stringify(command)}`)
+    seen.add(command)
+    commands.push(command)
+  }
+  return Object.freeze({ schema_version: 1, commands: Object.freeze(commands) })
+}
+
+export async function loadVerificationAllowlist(worktree, options = {}) {
+  if (typeof options === "function") options = { readFileImpl: options }
+  const {
+    readFileImpl = readFile,
+    realpathImpl = readFileImpl === readFile ? realpath : null,
+    env = process.env,
+  } = options
+  const path = join(worktree, VERIFICATION_ALLOWLIST_PATH)
+  try {
+    const source = await readFileImpl(path, "utf8")
+    let canonicalWorktree = resolve(worktree)
+    if (realpathImpl) {
+      canonicalWorktree = await realpathImpl(worktree)
+      const canonicalPolicy = await realpathImpl(path)
+      const policyRelative = relative(canonicalWorktree, canonicalPolicy)
+      if (!policyRelative || policyRelative.startsWith(`..${sep}`) || policyRelative === ".." || isAbsolute(policyRelative)) {
+        throw new Error("verification allowlist resolves outside the worktree")
+      }
+    }
+    const trust = env[VERIFICATION_ALLOWLIST_TRUST_ENV]
+    const trusted =
+      trust === "1" ||
+      (typeof trust === "string" &&
+        trust
+          .split(delimiter)
+          .filter(Boolean)
+          .map((candidate) => resolve(candidate))
+          .includes(resolve(canonicalWorktree)))
+    if (!trusted) {
+      return {
+        config: Object.freeze({ schema_version: 1, commands: Object.freeze([]) }),
+        source: path,
+        warning: `Project verification allowlist was ignored because ${VERIFICATION_ALLOWLIST_TRUST_ENV} does not trust this worktree.`,
+      }
+    }
+    const value = JSON.parse(source)
+    return { config: validateVerificationAllowlist(value), source: path }
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return { config: Object.freeze({ schema_version: 1, commands: Object.freeze([]) }), source: null }
+    }
+    return {
+      config: Object.freeze({ schema_version: 1, commands: Object.freeze([]) }),
+      source: path,
+      warning: "Project verification allowlist is invalid and was ignored.",
+    }
+  }
+}
+
 export async function loadModelConfig(worktree, options = {}) {
   if (typeof options === "function") options = { readFileImpl: options }
   const { home = homedir(), readFileImpl = readFile } = options
@@ -328,15 +455,23 @@ function readOnlyShellPermissions() {
   return inspectionShellPermissions("deny")
 }
 
-function boundedEditorShellPermissions() {
+function verificationShellPermissions(commands) {
+  return Object.fromEntries(commands.map((command) => [command, "allow"]))
+}
+
+function boundedEditorShellPermissions(verificationCommands = []) {
   return {
     ...inspectionShellPermissions("ask"),
     ...Object.fromEntries(SCRIPT_EDIT_SHELL_PATTERNS.map((pattern) => [pattern, "deny"])),
+    ...verificationShellPermissions(verificationCommands),
   }
 }
 
-function implementerShellPermissions() {
-  return inspectionShellPermissions("ask")
+function implementerShellPermissions(verificationCommands = []) {
+  return {
+    ...inspectionShellPermissions("ask"),
+    ...verificationShellPermissions(verificationCommands),
+  }
 }
 
 function localModel(config, model) {
@@ -379,6 +514,7 @@ export async function applyRoutingConfig(
   config,
   modelConfig = DEFAULT_MODEL_CONFIG,
   availability = profileAvailable,
+  verificationCommands = [],
 ) {
   const prompts = Object.fromEntries(
     await Promise.all(
@@ -472,7 +608,7 @@ export async function applyRoutingConfig(
         glob: "allow",
         grep: "allow",
         list: "allow",
-        bash: boundedEditorShellPermissions(),
+        bash: boundedEditorShellPermissions(verificationCommands),
       },
     },
     implementer: {
@@ -487,7 +623,7 @@ export async function applyRoutingConfig(
         glob: "allow",
         grep: "allow",
         list: "allow",
-        bash: implementerShellPermissions(),
+        bash: implementerShellPermissions(verificationCommands),
       },
     },
     summary: profileFields(role("summary")),
@@ -562,10 +698,12 @@ async function recordMetric(input, output) {
   await appendFile(path, `${JSON.stringify(record)}\n`, { mode: 0o600 })
 }
 
-export function hooksForModels(models) {
+export function hooksForModels(models, verification = { config: { commands: [] } }) {
   let remoteWorkers = new Set(WORKERS)
   const sessionAgents = new Map()
   const webfetchCircuits = new Map()
+  const verificationCommands = new Set(verification.config.commands)
+  const verificationWorkers = new Set(["implementer", "bounded-editor"])
   const rememberSessionAgent = (input, output) => {
     const sessionID = hookSessionID(input)
     const agent = hookAgent(input, output)
@@ -616,6 +754,26 @@ export function hooksForModels(models) {
     if (!sessionID || sessionAgents.get(sessionID) !== "bulk-researcher") return
     webfetchCircuits.get(sessionID)?.calls.delete(input.callID)
   }
+  const enforceVerificationAllowlist = async (input, output) => {
+    const sessionID = hookSessionID(input)
+    const agent = hookAgent(input, output) ?? sessionAgents.get(sessionID)
+    if (!verificationWorkers.has(agent)) return
+    const command = output?.args?.command
+    if (typeof command !== "string") return
+    if (verificationCommands.has(command)) {
+      if (typeof verification.refresh !== "function") return
+      const current = await verification.refresh()
+      if (current.warning || !current.config.commands.includes(command)) {
+        throw new Error(
+          "OpenCode Model Router blocked a stale project verification permission; restore the trusted allowlist or restart OpenCode.",
+        )
+      }
+      return
+    }
+    if ([...verificationCommands].some((allowed) => command.includes(allowed))) {
+      throw new Error("OpenCode Model Router blocked a non-exact shell use of an approved verification command.")
+    }
+  }
   return {
     event: async ({ event }) => {
       if (event.type === "message.part.updated") recordBulkResearchWebfetchFailure(event.properties.part)
@@ -624,12 +782,13 @@ export function hooksForModels(models) {
       if (event.type === "session.error") clearSession(event.properties.sessionID)
     },
     config: async (config) => {
-      const resolved = await applyRoutingConfig(config, models.config)
+      const resolved = await applyRoutingConfig(config, models.config, profileAvailable, verification.config.commands)
       remoteWorkers = resolved.remoteWorkers
     },
     "experimental.chat.system.transform": async (_input, output) => {
       output.system.push(ROUTING_POLICY)
       if (models.warning) output.system.push(`OpenCode Model Router configuration warning: ${models.warning}`)
+      if (verification.warning) output.system.push(`OpenCode Model Router verification allowlist warning: ${verification.warning}`)
     },
     "tool.definition": async (input, output) => {
       if (input.toolID !== "task") return
@@ -642,6 +801,10 @@ export function hooksForModels(models) {
       rememberSessionAgent(input, output)
     },
     "tool.execute.before": async (input, output) => {
+      if (input.tool === "bash") {
+        await enforceVerificationAllowlist(input, output)
+        return
+      }
       if (input.tool === "webfetch") {
         enforceBulkResearchWebfetchLimit(input, output)
         return
@@ -666,5 +829,11 @@ export function hooksForModels(models) {
 }
 
 export default async function opencodeModelRouter(input) {
-  return hooksForModels(await loadModelConfig(input.worktree))
+  const refreshVerification = () => loadVerificationAllowlist(input.worktree)
+  const [models, verification] = await Promise.all([
+    loadModelConfig(input.worktree),
+    refreshVerification(),
+  ])
+  verification.refresh = refreshVerification
+  return hooksForModels(models, verification)
 }

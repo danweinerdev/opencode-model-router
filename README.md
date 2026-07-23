@@ -132,6 +132,76 @@ Files are not merged. Missing files fall through silently; invalid files are
 ignored atomically, reported as orchestrator system warnings, and resolution
 continues at the next level. Restart OpenCode after changing either file.
 
+## Project verification allowlist
+
+Repositories can allow exact, routine verification commands for the
+`implementer` and `bounded-editor` without granting broader shell access. Add:
+
+```text
+$WORKTREE/.agents/verification-allowlist.json
+```
+
+For example:
+
+```json
+{
+  "schema_version": 1,
+  "commands": [
+    "cargo check --workspace",
+    "cargo test --workspace",
+    "cargo clippy --workspace --all-targets -- -D warnings",
+    "cargo fmt --all -- --check"
+  ]
+}
+```
+
+The file is project-local and is not merged with a home-level policy. Because
+verification commands execute repository-controlled code, the repository must
+also be trusted outside the checkout before the file is honored. Set the trust
+environment variable to the canonical worktree path before starting OpenCode:
+
+```sh
+export OPENCODE_MODEL_ROUTER_TRUST_VERIFICATION_ALLOWLIST="$(pwd -P)"
+```
+
+Multiple trusted worktrees use the platform path delimiter (`:` on Linux), and
+the explicit value `1` trusts verification allowlists in every worktree opened
+by that OpenCode process. Prefer canonical path entries over the global `1`
+switch. A symlinked policy that resolves outside the worktree is rejected.
+
+Commands are loaded at startup as exact permission entries rather than wildcard
+prefixes: arguments, order, and spacing must match. Immediately before an
+approved command runs, the plugin reloads the policy and blocks execution if
+the command was removed or the file became invalid/untrusted. Any non-exact
+shell command containing an approved command is also blocked, preventing shell
+wrappers, prefixes, suffixes, compounds, and redirection from inheriting the
+automatic permission. Newly added commands require an OpenCode restart.
+Commands unrelated to an approved entry continue to use the worker's normal
+`ask` rule.
+
+The schema rejects unknown fields, duplicate commands, more than 64 entries,
+unsafe shell syntax, and anything outside a fixed built-in command catalogue.
+Repositories select exact entries from that catalogue; they cannot introduce
+new command patterns or arguments:
+
+- Rust: `cargo check[ --workspace]`, `cargo test[ --workspace]`, `cargo clippy`,
+  `cargo clippy --workspace --all-targets -- -D warnings`, and check-only
+  `cargo fmt` variants.
+- Go: `go test ./...`, `go vet ./...`.
+- Python: bare `pytest`; `python|python3 -m pytest`; and bare/discover
+  `python|python3 -m unittest`.
+- JavaScript/TypeScript: bare `npm|pnpm|yarn test`, exact
+  `run test|lint|typecheck|check` scripts, and bare `bun test`.
+- JVM: bare `mvn|./mvnw test|verify` and `gradle|./gradlew test|check`.
+- Swift/.NET/Make: bare `swift test`, `dotnet test`, and
+  `make test|check|lint`.
+
+An invalid or untrusted file fails closed: no project verification commands are
+added, and the orchestrator receives a sanitized warning. Only editing workers
+receive these allowances; read-only research and review workers remain
+unchanged. A copyable Rust example is available at
+`examples/verification-allowlist.json.example`.
+
 ## Controls
 
 - Only configured general workers, including `implementer`, and code-review lane
