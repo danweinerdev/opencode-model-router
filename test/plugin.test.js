@@ -7,6 +7,7 @@ import {
   BULK_RESEARCHER_WEBFETCH_SESSION_LIMIT,
   BULK_RESEARCHER_WEBFETCH_URL_LIMIT,
   MODELS,
+  REVIEW_LANE_ROLES,
   WORKERS,
   applyRoutingConfig,
   hasResultFooter,
@@ -286,6 +287,55 @@ test("runtime guard blocks stale policy and shell syntax appended to approved co
       { args: { command: "cargo test" } },
     ),
     /stale project verification permission/,
+  )
+})
+
+test("review-lane Bash guard blocks shell composition while allowing direct inspection", async () => {
+  const hooks = hooksForModels({ config: DEFAULT_MODEL_CONFIG, source: "test" })
+  const prohibitedCommands = [
+    "git status > review.txt",
+    "git status < input.txt",
+    "git status | cat",
+    "git status; git diff",
+    "git status && git diff",
+    "git status\n git diff",
+    "git status\r git diff",
+    "git status `git diff`",
+    "git status $(git diff)",
+  ]
+
+  for (const agent of REVIEW_LANE_ROLES) {
+    const sessionID = `review-bash-${agent}`
+    await hooks["chat.params"]({ sessionID, agent }, {})
+    for (const command of prohibitedCommands) {
+      await assert.rejects(
+        hooks["tool.execute.before"](
+          { tool: "bash", sessionID },
+          { args: { command } },
+        ),
+        /blocked read-only review-lane Bash command.*direct inspection commands.*blocked or uncertain review result/,
+      )
+    }
+    for (const command of ["git diff --stat", "git status", "rg pattern"]) {
+      await assert.doesNotReject(
+        hooks["tool.execute.before"](
+          { tool: "bash", sessionID },
+          { args: { command } },
+        ),
+      )
+    }
+  }
+})
+
+test("review-lane Bash guard does not affect non-review workers", async () => {
+  const hooks = hooksForModels({ config: DEFAULT_MODEL_CONFIG, source: "test" })
+  await hooks["chat.params"]({ sessionID: "reasoner-bash", agent: "reasoner" }, {})
+
+  await assert.doesNotReject(
+    hooks["tool.execute.before"](
+      { tool: "bash", sessionID: "reasoner-bash" },
+      { args: { command: "git status > output.txt" } },
+    ),
   )
 })
 

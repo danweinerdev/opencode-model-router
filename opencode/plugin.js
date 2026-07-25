@@ -735,6 +735,18 @@ export function hooksForModels(models, verification = { config: { commands: [] }
     if (!sessionID || sessionAgents.get(sessionID) !== "bulk-researcher") return
     webfetchCircuits.get(sessionID)?.calls.delete(input.callID)
   }
+  const enforceReviewLaneBashGuard = (input, output) => {
+    const sessionID = hookSessionID(input)
+    const agent = hookAgent(input, output) ?? sessionAgents.get(sessionID)
+    if (!REVIEW_LANE_ROLES.includes(agent)) return
+    const command = output?.args?.command
+    if (typeof command !== "string") return
+    if (/[><|;&\r\n`]/.test(command) || command.includes("$(")) {
+      throw new Error(
+        "OpenCode Model Router blocked read-only review-lane Bash command with shell composition or redirection syntax; use direct inspection commands and return a blocked or uncertain review result.",
+      )
+    }
+  }
   const enforceVerificationAllowlist = async (input, output) => {
     const sessionID = hookSessionID(input)
     const agent = hookAgent(input, output) ?? sessionAgents.get(sessionID)
@@ -783,6 +795,7 @@ export function hooksForModels(models, verification = { config: { commands: [] }
     },
     "tool.execute.before": async (input, output) => {
       if (input.tool === "bash") {
+        enforceReviewLaneBashGuard(input, output)
         await enforceVerificationAllowlist(input, output)
         return
       }

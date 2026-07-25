@@ -203,8 +203,12 @@ unchanged. A copyable Rust example is available at
   or private-key material. This is a guardrail, not content classification.
 - Read-only workers may run a bounded common set of file inspection, search,
   comparison, and Git inspection shell commands. Other shell commands remain
-  denied. This is a cooperative guardrail rather than a filesystem sandbox;
-  OpenCode shell permissions do not independently constrain output redirection.
+  denied. The four SDD review lanes also receive a runtime Bash guard that
+  rejects composition and redirection syntax, requiring direct inspection
+  commands and a blocked or uncertain review result when that guard applies.
+  This remains a cooperative guardrail rather than a filesystem sandbox or a
+  complete shell parser; OpenCode shell permissions do not independently
+  constrain output redirection.
 - The bounded editor and implementer use the same inspection allowlist and ask
   before other verification commands. The bounded editor denies interpreter
   commands; the implementer permits user-approved runtime and inline
